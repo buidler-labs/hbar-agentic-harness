@@ -120,6 +120,7 @@ export interface TemplateSpec {
   name: string;
   description?: string;
   prdPath: string;
+  contractPath?: string;
   seed: SeedConfig;
   generator: CommandAgentConfig;
   skills?: string[];
@@ -128,6 +129,7 @@ export interface TemplateSpec {
   validators: {
     staticPath: string;
     commandsPath: string;
+    playwrightPath?: string;
   };
   requiredFiles: string[];
   forbiddenFiles: string[];
@@ -139,9 +141,28 @@ export interface TemplateSpec {
   };
 }
 
+export interface PlaywrightGateRouteResult {
+  name: string;
+  path: string;
+  statusCode: number | null;
+  rendered: boolean;
+  consoleErrors: string[];
+  forbiddenTextFound: string[];
+  durationMs: number;
+}
+
+export interface PlaywrightGateResult {
+  passed: boolean;
+  configPath: string;
+  serverUrl: string;
+  serverCommand: string;
+  routes: PlaywrightGateRouteResult[];
+  durationMs: number;
+}
+
 export interface ValidationFinding {
   id: string;
-  category: "files" | "static" | "secret" | "commands" | "agent" | "oracle";
+  category: "files" | "static" | "secret" | "commands" | "agent" | "oracle" | "playwright";
   message: string;
   details?: string;
 }
@@ -163,6 +184,7 @@ export interface ValidationResult {
   passed: boolean;
   findings: ValidationFinding[];
   commandResults: CommandExecutionResult[];
+  playwrightGate?: PlaywrightGateResult;
 }
 
 export interface RunReport {
@@ -202,6 +224,26 @@ export type HarnessLogEvent =
       timestamp: string;
       count: number;
       workspaceSkillsDir: string;
+    }
+  | {
+      type: "context_vendored";
+      timestamp: string;
+      prdPath: string;
+      contractPath?: string;
+      workspaceContextDir: string;
+    }
+  | {
+      type: "workspace_git_initialized";
+      timestamp: string;
+      commitSha: string;
+    }
+  | {
+      type: "workspace_git_committed";
+      timestamp: string;
+      attempt: number;
+      committed: boolean;
+      commitSha?: string;
+      message: string;
     }
   | {
       type: "generator_started";

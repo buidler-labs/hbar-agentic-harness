@@ -2,6 +2,7 @@ name: hedera-demo-from-main
 description: Blind generation of a Hedera-native Proof Wall demo template from scaffold-hbar main.
 
 prd: docs/prds/hedera-proof-wall-demo.md
+contract: contracts/proof-wall-acceptance.json
 
 seed:
   repo: /Users/sebastianraba/Work/scaffold-hbar
@@ -63,6 +64,7 @@ templateMetadata:
 validators:
   static: validators/blind-hedera-demo-static.json
   commands: validators/hedera-demo-yarn-validation.json
+  playwright: playwright/hedera-demo-smoke.yaml
 
 requiredFiles:
   - template.json

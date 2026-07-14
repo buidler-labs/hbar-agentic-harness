@@ -13,7 +13,9 @@ import { loadTemplateSpec } from "./specLoader.js";
 import type { AgentProgress } from "./agentStreamLogger.js";
 import type { BlindIntegrityResult, CliOptions, RunReport, ValidationResult } from "./types.js";
 import { auditOracleAccess } from "./oracleAudit.js";
+import { vendorHarnessContext } from "./contextVendor.js";
 import { vendorSkills } from "./skillVendor.js";
+import { commitWorkspaceAttempt, initWorkspaceGit } from "./workspaceGit.js";
 import { runDeterministicValidation } from "./validation/index.js";
 import { WorkspaceWatcher } from "./workspaceWatcher.js";
 import { seedWorkspace } from "./workspaceSeeder.js";
@@ -75,6 +77,30 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
     workspaceSkillsDir: path.join(seedResult.workspacePath, ".harness-skills"),
   });
   logPhase("Skills vendored into workspace", `.harness-skills (${vendoredSkills.length} files)`);
+
+  const vendoredContext = await vendorHarnessContext(seedResult.workspacePath, {
+    prdPath: spec.prdPath,
+    contractPath: spec.contractPath,
+  });
+  await appendHarnessLog(layout.jsonlLogPath, {
+    type: "context_vendored",
+    timestamp: new Date().toISOString(),
+    prdPath: vendoredContext.prdRelativePath,
+    contractPath: vendoredContext.contractRelativePath,
+    workspaceContextDir: path.join(seedResult.workspacePath, ".harness-context"),
+  });
+  logPhase(
+    "Harness context vendored into workspace",
+    `.harness-context${vendoredContext.contractRelativePath ? " (prd + contract)" : " (prd)"}`,
+  );
+
+  const gitInit = await initWorkspaceGit(seedResult.workspacePath);
+  await appendHarnessLog(layout.jsonlLogPath, {
+    type: "workspace_git_initialized",
+    timestamp: new Date().toISOString(),
+    commitSha: gitInit.commitSha,
+  });
+  logPhase("Workspace git initialized", gitInit.commitSha.slice(0, 8));
 
   let attempts = 0;
   let validation: ValidationResult = {
@@ -242,6 +268,10 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
 
     const validationLogPath = path.join(layout.logsDirectory, `validation-attempt-${attempts}.json`);
     await writeJsonFile(validationLogPath, validation);
+    if (validation.playwrightGate) {
+      const playwrightGateLogPath = path.join(layout.logsDirectory, `playwright-gate-attempt-${attempts}.json`);
+      await writeJsonFile(playwrightGateLogPath, validation.playwrightGate);
+    }
 
     await appendHarnessLog(layout.jsonlLogPath, {
       type: "validation_finished",
@@ -266,15 +296,39 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
     });
     logPhase(
       `Attempt ${attempts} validation ${validation.passed ? "passed" : "failed"}`,
-      validation.passed ? undefined : `${validation.findings.length} finding(s)`,
+      validation.passed
+        ? validation.playwrightGate
+          ? `playwright gate passed (${validation.playwrightGate.routes.length} routes)`
+          : undefined
+        : `${validation.findings.length} finding(s)`,
     );
+
+    const gitCommit = await commitWorkspaceAttempt(
+      seedResult.workspacePath,
+      attempts,
+      validation.passed,
+      validation.findings.length,
+    );
+    await appendHarnessLog(layout.jsonlLogPath, {
+      type: "workspace_git_committed",
+      timestamp: new Date().toISOString(),
+      attempt: attempts,
+      committed: gitCommit.committed,
+      commitSha: gitCommit.commitSha,
+      message: gitCommit.message,
+    });
+    if (gitCommit.committed && gitCommit.commitSha) {
+      logPhase(`Workspace committed`, `${gitCommit.message} @ ${gitCommit.commitSha.slice(0, 8)}`);
+    } else {
+      logPhase("Workspace unchanged", "no git commit needed for this attempt");
+    }
 
     if (validation.passed) {
       break;
     }
 
     if (attempts < maxAttempts) {
-      latestPrompt = buildRepairPrompt(validation.findings, attempts + 1);
+      latestPrompt = buildRepairPrompt(spec, validation.findings, attempts + 1, vendoredContext);
     }
   }
 

@@ -47,11 +47,16 @@ export async function runCli(parsed: ParsedCli): Promise<void> {
         `Validation finished`,
         `passed=${validation.passed}`,
         `findings=${validation.findings.length}`,
+        validation.playwrightGate
+          ? `playwrightGate=${validation.playwrightGate.passed} routes=${validation.playwrightGate.routes.length}`
+          : undefined,
         ...validation.findings.map(finding => `- ${finding.message}`),
         ...validation.commandResults.map(
           result => `command ${result.command} exit=${result.exitCode} durationMs=${result.durationMs}`,
         ),
-      ].join("\n"),
+      ]
+        .filter((line): line is string => Boolean(line))
+        .join("\n"),
     );
     if (!validation.passed) {
       process.exitCode = 1;

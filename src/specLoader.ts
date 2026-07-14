@@ -14,6 +14,7 @@ export async function loadTemplateSpec(specPath: string): Promise<LoadedTemplate
     name: readString(parsed, "name"),
     description: readOptionalString(parsed, "description"),
     prdPath: resolveProjectPath(projectRoot, readString(parsed, "prd")),
+    contractPath: readOptionalProjectPath(projectRoot, parsed, "contract"),
     seed: readSeed(parsed),
     generator: readGenerator(parsed),
     skills: readOptionalStringArray(parsed, "skills")?.map(skill =>
@@ -27,6 +28,7 @@ export async function loadTemplateSpec(specPath: string): Promise<LoadedTemplate
         projectRoot,
         readString(readObject(parsed, "validators"), "commands"),
       ),
+      playwrightPath: readOptionalValidatorPath(projectRoot, readObject(parsed, "validators"), "playwright"),
     },
     requiredFiles: readStringArray(parsed, "requiredFiles"),
     forbiddenFiles: readStringArray(parsed, "forbiddenFiles"),
@@ -53,6 +55,32 @@ export interface LoadedTemplateSpec {
 
 function resolveProjectPath(projectRoot: string, value: string): string {
   return path.isAbsolute(value) ? value : path.resolve(projectRoot, value);
+}
+
+function readOptionalProjectPath(
+  projectRoot: string,
+  parsed: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const candidate = parsed[key];
+  if (candidate === undefined) return undefined;
+  if (typeof candidate !== "string" || !candidate.trim()) {
+    throw new Error(`Expected optional non-empty string "${key}" in template spec.`);
+  }
+  return resolveProjectPath(projectRoot, candidate);
+}
+
+function readOptionalValidatorPath(
+  projectRoot: string,
+  validators: Record<string, unknown>,
+  key: string,
+): string | undefined {
+  const candidate = validators[key];
+  if (candidate === undefined) return undefined;
+  if (typeof candidate !== "string" || !candidate.trim()) {
+    throw new Error(`Expected optional non-empty string "validators.${key}" in template spec.`);
+  }
+  return resolveProjectPath(projectRoot, candidate);
 }
 
 function readSeed(parsed: Record<string, unknown>) {

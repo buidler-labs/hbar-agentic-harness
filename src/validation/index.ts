@@ -3,10 +3,12 @@ import path from "node:path";
 import { executeCommand } from "../command.js";
 import type {
   CommandExecutionResult,
+  PlaywrightGateResult,
   TemplateSpec,
   ValidationFinding,
   ValidationResult,
 } from "../types.js";
+import { runPlaywrightGate } from "./playwrightGate.js";
 
 interface StaticValidatorConfig {
   jsonAssertions?: Array<{
@@ -56,10 +58,25 @@ export async function runDeterministicValidation(
   findings.push(...commandValidation.findings);
   commandResults.push(...commandValidation.commandResults);
 
+  let playwrightGate: PlaywrightGateResult | undefined;
+  if (spec.validators.playwrightPath) {
+    if (commandValidation.findings.length === 0) {
+      console.log("[hbar-harness] Running thin Playwright gate...");
+      const gate = await runPlaywrightGate(workspacePath, spec.validators.playwrightPath);
+      playwrightGate = gate.result;
+      findings.push(...gate.findings);
+    } else {
+      console.log(
+        "[hbar-harness] Skipping Playwright gate because yarn command validation failed.",
+      );
+    }
+  }
+
   return {
     passed: findings.length === 0,
     findings,
     commandResults,
+    playwrightGate,
   };
 }
 
