@@ -1,0 +1,393 @@
+import path from "node:path";
+import { CommandAgentProvider } from "./providers/commandAgentProvider.js";
+import { buildGeneratorPrompt, buildRepairPrompt } from "./promptBuilder.js";
+import {
+  appendHarnessLog,
+  appendHarnessNote,
+  createRunLayout,
+  writeJsonFile,
+  writePromptFile,
+  writeStatusFile,
+} from "./runArtifacts.js";
+import { loadTemplateSpec } from "./specLoader.js";
+import type { AgentProgress } from "./agentStreamLogger.js";
+import type { BlindIntegrityResult, CliOptions, RunReport, ValidationResult } from "./types.js";
+import { auditOracleAccess } from "./oracleAudit.js";
+import { vendorSkills } from "./skillVendor.js";
+import { runDeterministicValidation } from "./validation/index.js";
+import { WorkspaceWatcher } from "./workspaceWatcher.js";
+import { seedWorkspace } from "./workspaceSeeder.js";
+
+export async function runHarness(options: CliOptions): Promise<RunReport> {
+  const loaded = await loadTemplateSpec(options.specPath);
+  const { spec, projectRoot } = loaded;
+  const maxAttempts = options.maxAttempts ?? spec.maxAttempts;
+  const layout = await createRunLayout(projectRoot, spec.name, spec.logging);
+  const startedAt = new Date();
+  const generator = new CommandAgentProvider(spec.generator);
+
+  logPhase("Run started", layout.runDirectory);
+  await writeStatusFile(layout.runDirectory, {
+    phase: "started",
+    specName: spec.name,
+    runDirectory: layout.runDirectory,
+  });
+
+  await appendHarnessLog(layout.jsonlLogPath, {
+    type: "run_started",
+    timestamp: startedAt.toISOString(),
+    specName: spec.name,
+    runDirectory: layout.runDirectory,
+  });
+
+  await appendHarnessNote(
+    layout.notesLogPath,
+    `Run started: ${spec.name}`,
+    `Run directory: ${layout.runDirectory}\nSpec: ${loaded.specPath}`,
+  );
+
+  logPhase("Seeding workspace from scaffold-hbar main", spec.seed.ref);
+  const seedResult = await seedWorkspace({
+    seed: spec.seed,
+    runDirectory: layout.runDirectory,
+    workspacePath: layout.workspacePath,
+    runPreflight: true,
+  });
+
+  await appendHarnessLog(layout.jsonlLogPath, {
+    type: "workspace_seeded",
+    timestamp: new Date().toISOString(),
+    seedCommitSha: seedResult.commitSha,
+    workspacePath: seedResult.workspacePath,
+  });
+  await writeStatusFile(layout.runDirectory, {
+    phase: "seeded",
+    seedCommitSha: seedResult.commitSha,
+    workspacePath: seedResult.workspacePath,
+  });
+  logPhase("Workspace seeded", seedResult.workspacePath);
+
+  const vendoredSkills = await vendorSkills(seedResult.workspacePath, spec.skills ?? []);
+  await appendHarnessLog(layout.jsonlLogPath, {
+    type: "skills_vendored",
+    timestamp: new Date().toISOString(),
+    count: vendoredSkills.length,
+    workspaceSkillsDir: path.join(seedResult.workspacePath, ".harness-skills"),
+  });
+  logPhase("Skills vendored into workspace", `.harness-skills (${vendoredSkills.length} files)`);
+
+  let attempts = 0;
+  let validation: ValidationResult = {
+    passed: false,
+    findings: [
+      {
+        id: "generator-not-run",
+        category: "agent",
+        message: "Generator did not complete a successful attempt.",
+      },
+    ],
+    commandResults: [],
+  };
+  let latestPrompt = await buildGeneratorPrompt(spec, 1, vendoredSkills);
+  let blindIntegrity: BlindIntegrityResult = {
+    passed: true,
+    findings: [],
+    scannedLogs: [],
+  };
+
+  while (attempts < maxAttempts) {
+    attempts += 1;
+    const promptPath = path.join(
+      layout.promptsDirectory,
+      attempts === 1 ? "generator-attempt-1.txt" : `repair-attempt-${attempts}.txt`,
+    );
+    await writePromptFile(promptPath, latestPrompt);
+
+    await appendHarnessLog(layout.jsonlLogPath, {
+      type: attempts === 1 ? "generator_started" : "repair_started",
+      timestamp: new Date().toISOString(),
+      attempt: attempts,
+      promptPath,
+    });
+    await writeStatusFile(layout.runDirectory, {
+      phase: attempts === 1 ? "generator_running" : "repair_running",
+      attempt: attempts,
+      promptPath,
+    });
+    logPhase(
+      attempts === 1 ? `Generator attempt ${attempts} started` : `Repair attempt ${attempts} started`,
+      "Tail logs/generator-attempt-N.activity.log and logs/workspace-activity.log",
+    );
+
+    const agentLogPath = path.join(layout.logsDirectory, `generator-attempt-${attempts}.log`);
+    const agentActivityLogPath = path.join(layout.logsDirectory, `generator-attempt-${attempts}.activity.log`);
+    const workspaceActivityLogPath = path.join(layout.logsDirectory, `workspace-attempt-${attempts}.activity.log`);
+    const agentStartedAt = Date.now();
+    let latestProgress: AgentProgress = {
+      lastActivity: "agent process spawned",
+      toolCallsStarted: 0,
+      toolCallsCompleted: 0,
+    };
+
+    const workspaceWatcher = new WorkspaceWatcher(
+      seedResult.workspacePath,
+      workspaceActivityLogPath,
+      async summary => {
+        latestProgress = { ...latestProgress, lastActivity: summary };
+        await writeStatusFile(layout.runDirectory, buildAgentStatus(attempts, agentStartedAt, latestProgress, {
+          activityLogPath: agentActivityLogPath,
+          workspaceActivityLogPath,
+        }));
+      },
+    );
+    await workspaceWatcher.start();
+
+    const heartbeat = setInterval(() => {
+      void writeStatusFile(layout.runDirectory, buildAgentStatus(attempts, agentStartedAt, latestProgress, {
+        activityLogPath: agentActivityLogPath,
+        workspaceActivityLogPath,
+      }));
+      console.log(
+        `[hbar-harness] agent still running (${Math.round((Date.now() - agentStartedAt) / 1000)}s) — ${latestProgress.lastActivity}`,
+      );
+    }, 15_000);
+
+    let agentResult;
+    try {
+      agentResult = await generator.run({
+        workspacePath: seedResult.workspacePath,
+        prompt: latestPrompt,
+        attempt: attempts,
+        role: "generator",
+        timeoutMs: spec.generator.timeoutMs,
+        logPath: agentLogPath,
+        activityLogPath: agentActivityLogPath,
+        onProgress: async progress => {
+          latestProgress = progress;
+          await writeStatusFile(layout.runDirectory, buildAgentStatus(attempts, agentStartedAt, progress, {
+            activityLogPath: agentActivityLogPath,
+            workspaceActivityLogPath,
+          }));
+        },
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      agentResult = {
+        exitCode: 127,
+        stdout: "",
+        stderr: message,
+        durationMs: 0,
+        command: spec.generator.command,
+        args: spec.generator.args ?? [],
+        timedOut: false,
+        signal: null,
+      };
+    } finally {
+      clearInterval(heartbeat);
+      await workspaceWatcher.stop();
+    }
+
+    await appendHarnessLog(layout.jsonlLogPath, {
+      type: "generator_finished",
+      timestamp: new Date().toISOString(),
+      attempt: attempts,
+      exitCode: agentResult.exitCode,
+      durationMs: agentResult.durationMs,
+      timedOut: agentResult.timedOut,
+    });
+
+    blindIntegrity = await auditOracleAccess({
+      workspacePath: seedResult.workspacePath,
+      seedRepo: spec.seed.repo,
+      harnessProjectRoot: projectRoot,
+      runDirectory: layout.runDirectory,
+      activityLogPath: agentActivityLogPath,
+      rawLogPath: agentLogPath,
+    });
+    const oracleAuditPath = path.join(layout.logsDirectory, `oracle-audit-attempt-${attempts}.json`);
+    await writeJsonFile(oracleAuditPath, blindIntegrity);
+    await appendHarnessLog(layout.jsonlLogPath, {
+      type: "oracle_audit_finished",
+      timestamp: new Date().toISOString(),
+      attempt: attempts,
+      passed: blindIntegrity.passed,
+      findingCount: blindIntegrity.findings.length,
+    });
+
+    if (!blindIntegrity.passed) {
+      logPhase(
+        "Oracle audit failed (informational)",
+        `${blindIntegrity.findings.length} peeking finding(s) — does not affect harness pass/fail`,
+      );
+    }
+
+    if (agentResult.exitCode !== 0) {
+      const agentFinding = {
+        id: agentResult.timedOut ? `generator-timeout:${attempts}` : `generator-exit:${attempts}`,
+        category: "agent" as const,
+        message: agentResult.timedOut
+          ? `Generator agent timed out after ${Math.round(agentResult.durationMs / 1000)}s`
+          : `Generator agent exited with code ${agentResult.exitCode ?? "null"}`,
+        details: truncate(agentResult.stderr || agentResult.stdout),
+      };
+      const deterministicValidation = await runDeterministicValidation(seedResult.workspacePath, spec);
+      validation = {
+        passed: false,
+        findings: [agentFinding, ...deterministicValidation.findings],
+        commandResults: deterministicValidation.commandResults,
+      };
+    } else {
+      validation = await runDeterministicValidation(seedResult.workspacePath, spec);
+    }
+
+    const validationLogPath = path.join(layout.logsDirectory, `validation-attempt-${attempts}.json`);
+    await writeJsonFile(validationLogPath, validation);
+
+    await appendHarnessLog(layout.jsonlLogPath, {
+      type: "validation_finished",
+      timestamp: new Date().toISOString(),
+      attempt: attempts,
+      passed: validation.passed,
+      findingCount: validation.findings.length,
+    });
+
+    await appendHarnessNote(
+      layout.notesLogPath,
+      `Attempt ${attempts} validation`,
+      validation.passed
+        ? "Deterministic validation passed."
+        : validation.findings.map(finding => `- ${finding.message}`).join("\n"),
+    );
+    await writeStatusFile(layout.runDirectory, {
+      phase: "validated",
+      attempt: attempts,
+      passed: validation.passed,
+      findingCount: validation.findings.length,
+    });
+    logPhase(
+      `Attempt ${attempts} validation ${validation.passed ? "passed" : "failed"}`,
+      validation.passed ? undefined : `${validation.findings.length} finding(s)`,
+    );
+
+    if (validation.passed) {
+      break;
+    }
+
+    if (attempts < maxAttempts) {
+      latestPrompt = buildRepairPrompt(validation.findings, attempts + 1);
+    }
+  }
+
+  const finishedAt = new Date();
+  const report: RunReport = {
+    specName: spec.name,
+    specPath: loaded.specPath,
+    runDirectory: layout.runDirectory,
+    workspacePath: seedResult.workspacePath,
+    seedRepo: seedResult.repo,
+    seedRef: seedResult.ref,
+    seedCommitSha: seedResult.commitSha,
+    attempts,
+    maxAttempts,
+    passed: validation.passed,
+    blindIntegrity,
+    startedAt: startedAt.toISOString(),
+    finishedAt: finishedAt.toISOString(),
+    durationMs: finishedAt.getTime() - startedAt.getTime(),
+    validation,
+  };
+
+  await writeJsonFile(layout.reportPath, report);
+
+  await appendHarnessLog(layout.jsonlLogPath, {
+    type: "run_finished",
+    timestamp: finishedAt.toISOString(),
+    passed: report.passed,
+    attempts: report.attempts,
+    reportPath: layout.reportPath,
+  });
+
+  await appendHarnessNote(
+    layout.notesLogPath,
+    `Run finished: ${spec.name}`,
+    [
+      report.passed
+        ? `Passed after ${report.attempts} attempt(s). Report: ${layout.reportPath}`
+        : `Failed after ${report.attempts} attempt(s). Report: ${layout.reportPath}`,
+      formatBlindIntegritySummary(report.blindIntegrity),
+    ].join("\n"),
+  );
+  await writeStatusFile(layout.runDirectory, {
+    phase: "finished",
+    passed: report.passed,
+    blindIntegrityPassed: report.blindIntegrity.passed,
+    attempts: report.attempts,
+    reportPath: layout.reportPath,
+  });
+  logPhase(
+    `Run finished: ${report.passed ? "PASSED" : "FAILED"}`,
+    report.passed && !report.blindIntegrity.passed
+      ? `${layout.reportPath} — validation passed but oracle audit detected peeking`
+      : `${layout.reportPath} (oracleAudit=${report.blindIntegrity.passed ? "passed" : "failed"})`,
+  );
+  if (report.passed && !report.blindIntegrity.passed) {
+    console.log(formatBlindIntegritySummary(report.blindIntegrity));
+  }
+
+  return report;
+}
+
+export async function validateWorkspace(options: CliOptions) {
+  if (!options.workspacePath) {
+    throw new Error('Expected --workspace <path> for validate command.');
+  }
+
+  const loaded = await loadTemplateSpec(options.specPath);
+  return runDeterministicValidation(options.workspacePath, loaded.spec);
+}
+
+function logPhase(title: string, detail?: string): void {
+  const suffix = detail ? ` — ${detail}` : "";
+  console.log(`[hbar-harness] ${title}${suffix}`);
+}
+
+function truncate(value: string, maxLength = 1200): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, maxLength)}...`;
+}
+
+function formatBlindIntegritySummary(blindIntegrity: BlindIntegrityResult): string {
+  if (blindIntegrity.passed) {
+    return "Oracle audit: passed (no peeking detected).";
+  }
+
+  const findings = blindIntegrity.findings
+    .map(finding => `- ${finding.message}${finding.path ? ` (${finding.path})` : ""}`)
+    .join("\n");
+
+  return [
+    `Oracle audit: FAILED — agent may have peeked outside the workspace (${blindIntegrity.findings.length} finding(s)).`,
+    "This does not fail the harness when deterministic validation passes.",
+    findings,
+  ].join("\n");
+}
+
+function buildAgentStatus(
+  attempt: number,
+  startedAtMs: number,
+  progress: AgentProgress,
+  logs: { activityLogPath: string; workspaceActivityLogPath: string },
+): Record<string, unknown> {
+  return {
+    phase: "generator_running",
+    attempt,
+    elapsedSeconds: Math.round((Date.now() - startedAtMs) / 1000),
+    lastActivity: progress.lastActivity,
+    toolCallsStarted: progress.toolCallsStarted,
+    toolCallsCompleted: progress.toolCallsCompleted,
+    sessionId: progress.sessionId,
+    activityLogPath: logs.activityLogPath,
+    workspaceActivityLogPath: logs.workspaceActivityLogPath,
+  };
+}

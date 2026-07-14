@@ -1,0 +1,150 @@
+import { runHarness, validateWorkspace } from "./runner.js";
+import type { CliOptions, HarnessCommand, ParsedCli } from "./types.js";
+
+const COMMANDS = new Set<HarnessCommand>(["run", "supervise", "validate"]);
+
+export function parseCliArgs(argv: string[]): ParsedCli {
+  const [rawCommand, specPath, ...rest] = argv;
+
+  if (!rawCommand || !isHarnessCommand(rawCommand)) {
+    throw new Error(`Expected command "run", "validate", or "supervise".`);
+  }
+
+  if (!specPath || specPath.startsWith("-")) {
+    throw new Error(`Expected a template spec path.`);
+  }
+
+  return {
+    command: rawCommand,
+    options: parseOptions(specPath, rest),
+  };
+}
+
+export function printHelp(): void {
+  console.log(`hbar-harness
+
+Usage:
+  hbar-harness run <spec> [--agent <name>] [--max-attempts <count>]
+  hbar-harness validate <spec> --workspace <path>
+  hbar-harness supervise <spec> [--agent <name>] [--max-attempts <count>] [--max-cycles <count>]
+
+Examples:
+  hbar-harness run specs/hedera-demo-from-main.yaml
+  hbar-harness run specs/hedera-demo-from-main.yaml --max-attempts 3
+  hbar-harness validate specs/hedera-demo-from-main.yaml --workspace runs/<run-id>/workspace
+  hbar-harness supervise specs/hedera-demo-from-main.yaml --max-cycles 20`);
+}
+
+export async function runCli(parsed: ParsedCli): Promise<void> {
+  if (parsed.command === "supervise") {
+    throw new Error("Supervisor mode is not implemented yet.");
+  }
+
+  if (parsed.command === "validate") {
+    const validation = await validateWorkspace(parsed.options);
+    console.log(
+      [
+        `Validation finished`,
+        `passed=${validation.passed}`,
+        `findings=${validation.findings.length}`,
+        ...validation.findings.map(finding => `- ${finding.message}`),
+        ...validation.commandResults.map(
+          result => `command ${result.command} exit=${result.exitCode} durationMs=${result.durationMs}`,
+        ),
+      ].join("\n"),
+    );
+    if (!validation.passed) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  const report = await runHarness(parsed.options);
+  const summaryLines = [
+    `Harness run finished`,
+    `spec=${report.specName}`,
+    `passed=${report.passed}`,
+    `oracleAudit=${report.blindIntegrity.passed ? "passed" : "failed"}`,
+    `attempts=${report.attempts}/${report.maxAttempts}`,
+    `findings=${report.validation.findings.length}`,
+    `workspace=${report.workspacePath}`,
+    `report=${report.runDirectory}/reports/report.json`,
+    `validationLog=${report.runDirectory}/logs/validation-attempt-${report.attempts}.json`,
+    `oracleAuditLog=${report.runDirectory}/logs/oracle-audit-attempt-${report.attempts}.json`,
+    `jsonlLog=runs/harness.log.jsonl`,
+    `notesLog=runs/harness-notes.md`,
+  ];
+
+  if (report.passed && !report.blindIntegrity.passed) {
+    summaryLines.push(
+      `WARNING: validation passed but oracle audit detected peeking (${report.blindIntegrity.findings.length} finding(s))`,
+    );
+  }
+
+  if (!report.passed) {
+    summaryLines.push(...report.validation.findings.map(finding => `- ${finding.message}`));
+  }
+
+  console.log(summaryLines.join("\n"));
+
+  if (!report.passed) {
+    process.exitCode = 1;
+  }
+}
+
+function parseOptions(specPath: string, args: string[]): CliOptions {
+  const options: CliOptions = { specPath };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+
+    switch (arg) {
+      case "--agent":
+        options.agent = readValue(args, ++index, arg);
+        break;
+      case "--max-attempts":
+        options.maxAttempts = readPositiveInteger(args, ++index, arg);
+        break;
+      case "--max-cycles":
+        options.maxCycles = readPositiveInteger(args, ++index, arg);
+        break;
+      case "--workspace":
+        options.workspacePath = readValue(args, ++index, arg);
+        break;
+      case "--help":
+      case "-h":
+        printHelp();
+        process.exitCode = 0;
+        break;
+      default:
+        throw new Error(`Unknown option: ${arg}`);
+    }
+  }
+
+  return options;
+}
+
+function readValue(args: string[], index: number, flag: string): string {
+  const value = args[index];
+
+  if (!value || value.startsWith("-")) {
+    throw new Error(`Expected a value after ${flag}.`);
+  }
+
+  return value;
+}
+
+function readPositiveInteger(args: string[], index: number, flag: string): number {
+  const value = readValue(args, index, flag);
+  const parsed = Number.parseInt(value, 10);
+
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed.toString() !== value) {
+    throw new Error(`Expected ${flag} to be a positive integer.`);
+  }
+
+  return parsed;
+}
+
+function isHarnessCommand(value: string): value is HarnessCommand {
+  return COMMANDS.has(value as HarnessCommand);
+}

@@ -1,0 +1,30 @@
+# Dependencies & build output
+node_modules/
+dist/
+
+# Harness run artifacts (generated workspaces, logs, reports)
+runs/
+.seed-cache/
+
+# TypeScript
+*.tsbuildinfo
+
+# Logs
+*.log
+
+# Environment & secrets
+.env
+.env.*
+!.env.example
+
+# OS & editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Test / coverage (future)
+coverage/
+test-results/
+playwright-report/
