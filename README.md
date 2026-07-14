@@ -13,16 +13,22 @@ TypeScript CLI harness for generating and validating scaffold-hbar templates wit
 ## Usage
 
 ```bash
-npm run harness -- run specs/hedera-demo-from-main.yaml
-npm run harness -- run specs/hedera-demo-from-main.yaml --max-attempts 3
+npm run harness -- run specs/<your-spec>.yaml
+npm run harness -- run specs/<your-spec>.yaml --max-attempts 3
 ```
 
-## First Blind Benchmark
+## PRDs (local only)
 
-The first benchmark spec is [`specs/hedera-demo-from-main.yaml`](specs/hedera-demo-from-main.yaml).
+Human-authored product requirements go in `docs/prds/` on your machine. That directory is **gitignored** except for `docs/prds/README.md` — each developer adds their own PRDs locally and points to them from a spec:
 
-- Seed: `scaffold-hbar` `main`
-- PRD: [`docs/prds/hedera-proof-wall-demo.md`](docs/prds/hedera-proof-wall-demo.md)
+```yaml
+prd: docs/prds/my-template.md
+```
+
+## Example benchmark
+
+See [`specs/hedera-demo-from-main.yaml`](specs/hedera-demo-from-main.yaml) for an example spec layout (seed, generator, validators, constraints). Update `seed.repo`, `skills`, and `prd` paths for your environment before running.
+
 - The harness does not receive any reference implementation.
 - Human comparison against an existing template happens outside the harness after the run.
 
