@@ -116,6 +116,10 @@ export interface SecretScanConfig {
   }>;
 }
 
+export interface ValidatorAgentConfig extends CommandAgentConfig {
+  enabled?: boolean;
+}
+
 export interface TemplateSpec {
   name: string;
   description?: string;
@@ -123,6 +127,7 @@ export interface TemplateSpec {
   contractPath?: string;
   seed: SeedConfig;
   generator: CommandAgentConfig;
+  validator?: ValidatorAgentConfig;
   skills?: string[];
   constraints?: TemplateConstraints;
   templateMetadata?: TemplateMetadata;
@@ -160,9 +165,32 @@ export interface PlaywrightGateResult {
   durationMs: number;
 }
 
+export interface ValidatorIssue {
+  id: string;
+  contractAssertion?: string;
+  severity: "critical" | "major" | "minor";
+  route?: string;
+  message: string;
+  evidence?: string;
+}
+
+export interface ValidatorVerdict {
+  passed: boolean;
+  summary: string;
+  issues: ValidatorIssue[];
+}
+
+export interface SemanticValidationResult {
+  passed: boolean;
+  verdict?: ValidatorVerdict;
+  findings: ValidationFinding[];
+  serverUrl?: string;
+  durationMs: number;
+}
+
 export interface ValidationFinding {
   id: string;
-  category: "files" | "static" | "secret" | "commands" | "agent" | "oracle" | "playwright";
+  category: "files" | "static" | "secret" | "commands" | "agent" | "oracle" | "playwright" | "semantic";
   message: string;
   details?: string;
 }
@@ -185,6 +213,7 @@ export interface ValidationResult {
   findings: ValidationFinding[];
   commandResults: CommandExecutionResult[];
   playwrightGate?: PlaywrightGateResult;
+  semanticValidation?: SemanticValidationResult;
 }
 
 export interface RunReport {
@@ -197,13 +226,14 @@ export interface RunReport {
   seedCommitSha: string;
   attempts: number;
   maxAttempts: number;
-  /** True when deterministic validation passes; oracle audit is reported separately in blindIntegrity. */
+  /** True when deterministic, playwright gate, and semantic validation (if configured) all pass. */
   passed: boolean;
   blindIntegrity: BlindIntegrityResult;
   startedAt: string;
   finishedAt: string;
   durationMs: number;
   validation: ValidationResult;
+  semanticValidation?: SemanticValidationResult;
 }
 
 export type HarnessLogEvent =
@@ -272,6 +302,21 @@ export type HarnessLogEvent =
       attempt: number;
       passed: boolean;
       findingCount: number;
+    }
+  | {
+      type: "validator_started";
+      timestamp: string;
+      attempt: number;
+      promptPath: string;
+      serverUrl: string;
+    }
+  | {
+      type: "validator_finished";
+      timestamp: string;
+      attempt: number;
+      passed: boolean;
+      findingCount: number;
+      durationMs: number;
     }
   | {
       type: "repair_started";

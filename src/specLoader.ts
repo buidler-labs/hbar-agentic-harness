@@ -17,6 +17,7 @@ export async function loadTemplateSpec(specPath: string): Promise<LoadedTemplate
     contractPath: readOptionalProjectPath(projectRoot, parsed, "contract"),
     seed: readSeed(parsed),
     generator: readGenerator(parsed),
+    validator: readOptionalValidator(parsed),
     skills: readOptionalStringArray(parsed, "skills")?.map(skill =>
       path.isAbsolute(skill) ? skill : path.resolve(projectRoot, skill),
     ),
@@ -101,6 +102,32 @@ function readGenerator(parsed: Record<string, unknown>) {
     args: readOptionalStringArray(generator, "args"),
     env: readOptionalStringRecord(generator, "env"),
     timeoutMs: readOptionalNumber(generator, "timeoutMs"),
+  };
+}
+
+function readOptionalValidator(parsed: Record<string, unknown>) {
+  const validator = parsed.validator;
+  if (validator === undefined) return undefined;
+  if (!validator || typeof validator !== "object" || Array.isArray(validator)) {
+    throw new Error('Expected object "validator" in template spec.');
+  }
+
+  const record = validator as Record<string, unknown>;
+  if (record.enabled === false) {
+    return {
+      provider: "command" as const,
+      command: readOptionalString(record, "command") ?? "agent",
+      enabled: false,
+    };
+  }
+
+  return {
+    provider: "command" as const,
+    command: readString(record, "command"),
+    args: readOptionalStringArray(record, "args"),
+    env: readOptionalStringRecord(record, "env"),
+    timeoutMs: readOptionalNumber(record, "timeoutMs"),
+    enabled: record.enabled !== false,
   };
 }
 
