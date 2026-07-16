@@ -65,6 +65,9 @@ export async function buildGeneratorPrompt(
     spec.validators.playwrightPath
       ? "When build passes, the harness also runs a thin Playwright gate (dev server boots, routes render, no console errors)."
       : undefined,
+    spec.validator && spec.validator.enabled !== false
+      ? "When deterministic and Playwright gates pass, a read-only validator agent grades the live app against the acceptance contract."
+      : undefined,
   ]
     .filter((line): line is string => Boolean(line))
     .join("\n");
@@ -116,7 +119,7 @@ export function buildRepairPrompt(
     "- Keep Yarn-only workflows.",
     "- Do not add secrets or `.env` files.",
     "- Preserve scaffold-hbar template conventions.",
-    "- Fix findings in priority order: [agent] process failures, [commands] build/lint, [playwright] runtime gate, then [files]/[static]/[secret].",
+    "- Fix findings in priority order: [agent] process failures, [commands] build/lint, [playwright] runtime gate, [semantic] contract assertions, then [files]/[static]/[secret].",
     "- Re-run the relevant validation mentally before finishing.",
     "",
     "Append a brief repair note to `GENERATION_NOTES.md` at the workspace root, describing what failed and what you changed.",
@@ -146,4 +149,48 @@ function formatSkillSummaries(skills: VendoredSkill[]): string {
   return skills
     .map(skill => `### ${skill.name}\nSource: ${skill.relativePath}\n${skill.description}`)
     .join("\n\n");
+}
+
+export function buildValidatorPrompt(contractJson: string, serverUrl: string): string {
+  const outputSchema = {
+    passed: true,
+    summary: "Brief overall summary of the evaluation.",
+    issues: [
+      {
+        id: "issue-slug",
+        contractAssertion: "C1",
+        severity: "critical",
+        route: "/",
+        message: "What failed and why.",
+        evidence: "Route visited, elements observed, console output.",
+      },
+    ],
+  };
+
+  return [
+    "You are an adversarial QA evaluator for a scaffold-hbar template harness.",
+    "",
+    "## Mission",
+    `Drive the running app at ${serverUrl} in a browser (use Playwright MCP or equivalent live-drive tooling).`,
+    "For each acceptance-contract assertion, positively verify it or mark it failed.",
+    "You cannot edit files. Do not read seed repos, harness runs, or oracle paths outside this workspace.",
+    "Do not assume missing context. Fail on uncertainty.",
+    "",
+    "## Acceptance Contract",
+    contractJson.trim(),
+    "",
+    "## Output Requirements",
+    "Output ONLY a single JSON object matching this schema (no prose outside JSON):",
+    "```json",
+    JSON.stringify(outputSchema, null, 2),
+    "```",
+    "",
+    "## Rules",
+    "- Set passed=true only when ALL contract assertions are positively verified.",
+    "- Every failed assertion must appear in issues[] with contractAssertion matching the assertion id (e.g. C1).",
+    "- severity must be one of: critical, major, minor (per the contract).",
+    "- For walletRequired assertions, do NOT complete on-chain transactions; verify affordances and no-wallet handling only.",
+    "- Cite route, UI elements, and console observations in evidence for every issue.",
+    "- If you cannot positively verify an assertion, mark it failed with evidence explaining the uncertainty.",
+  ].join("\n");
 }

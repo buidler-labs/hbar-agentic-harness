@@ -34,7 +34,7 @@ export class CommandAgentProvider implements AgentProvider {
     const args = buildArgs(this.config.args ?? [], {
       prompt: input.prompt,
       workspacePath: input.workspacePath,
-    });
+    }, input.role);
     const timeoutMs = input.timeoutMs ?? this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const streamLogger = input.activityLogPath
       ? new AgentStreamLogger(input.activityLogPath, input.onProgress)
@@ -174,13 +174,16 @@ async function finalizeAgentLog(
 function buildArgs(
   configArgs: string[],
   input: { prompt: string; workspacePath: string },
+  role?: "generator" | "validator",
 ): string[] {
-  const replaced = configArgs.map(arg =>
+  const effectiveArgs =
+    role === "validator" ? configArgs.filter(arg => arg !== "--force") : configArgs;
+  const replaced = effectiveArgs.map(arg =>
     arg
       .replaceAll(WORKSPACE_PLACEHOLDER, input.workspacePath)
       .replaceAll(PROMPT_PLACEHOLDER, input.prompt),
   );
-  const hasPromptPlaceholder = configArgs.some(arg => arg.includes(PROMPT_PLACEHOLDER));
+  const hasPromptPlaceholder = effectiveArgs.some(arg => arg.includes(PROMPT_PLACEHOLDER));
   return hasPromptPlaceholder ? replaced : [...replaced, input.prompt];
 }
 
