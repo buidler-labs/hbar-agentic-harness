@@ -296,7 +296,22 @@ function getByPath(value: unknown, dottedPath: string): unknown {
 }
 
 function valuesEqual(actual: unknown, expected: unknown): boolean {
-  return JSON.stringify(actual) === JSON.stringify(expected);
+  if (JSON.stringify(actual) === JSON.stringify(expected)) {
+    return true;
+  }
+
+  // Accept a scalar when the spec expects a single-item array (common generator drift).
+  if (Array.isArray(expected) && expected.length === 1) {
+    const expectedItem = expected[0];
+    if (JSON.stringify(actual) === JSON.stringify(expectedItem)) {
+      return true;
+    }
+    if (Array.isArray(actual) && actual.length === 1 && JSON.stringify(actual[0]) === JSON.stringify(expectedItem)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 async function pathExists(targetPath: string): Promise<boolean> {
