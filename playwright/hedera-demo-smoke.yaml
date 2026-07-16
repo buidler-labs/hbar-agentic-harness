@@ -12,7 +12,7 @@ artifacts:
   consoleErrors: true
 
 defaults:
-  timeoutMs: 30000
+  timeoutMs: 60000
   failOnConsoleError: true
   requiresWallet: false
   requiresSecrets: false

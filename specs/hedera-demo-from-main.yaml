@@ -33,6 +33,24 @@ generator:
     - --stream-partial-output
   timeoutMs: 3600000
 
+validator:
+  enabled: true
+  provider: command
+  command: agent
+  args:
+    - -p
+    - --trust
+    - --sandbox
+    - enabled
+    - --workspace
+    - "{workspace}"
+    - --model
+    - composer-2.5
+    - --output-format
+    - stream-json
+    - --stream-partial-output
+  timeoutMs: 600000
+
 skills:
   - /Users/sebastianraba/Work/hedera-skills/plugins/dev-intelligence/skills/project-scaffolding/SKILL.md
   - /Users/sebastianraba/Work/hedera-skills/plugins/dev-intelligence/skills/quality-gates/SKILL.md
