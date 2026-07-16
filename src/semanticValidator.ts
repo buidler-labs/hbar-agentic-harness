@@ -1,0 +1,201 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
+import { CommandAgentProvider } from "./providers/commandAgentProvider.js";
+import { buildValidatorPrompt } from "./promptBuilder.js";
+import { writePromptFile } from "./runArtifacts.js";
+import type {
+  SemanticValidationResult,
+  TemplateSpec,
+  ValidationFinding,
+  ValidatorIssue,
+  ValidatorVerdict,
+} from "./types.js";
+import { parseValidatorVerdict } from "./validatorVerdictParser.js";
+import { loadDevServerConfig, startDevServer, stopDevServer, waitForServer } from "./validation/devServer.js";
+
+export function isValidatorEnabled(spec: TemplateSpec): boolean {
+  return spec.validator !== undefined && spec.validator.enabled !== false;
+}
+
+export async function runSemanticValidation(input: {
+  workspacePath: string;
+  spec: TemplateSpec;
+  attempt: number;
+  logsDirectory: string;
+  promptsDirectory: string;
+}): Promise<SemanticValidationResult> {
+  const startedAt = Date.now();
+  const validatorConfig = input.spec.validator;
+  if (!validatorConfig || validatorConfig.enabled === false) {
+    return {
+      passed: true,
+      findings: [],
+      durationMs: 0,
+    };
+  }
+
+  if (!input.spec.contractPath) {
+    return failureResult(startedAt, [
+      findingFromMessage("validator-config", "Semantic validator requires spec.contract to be configured."),
+    ]);
+  }
+
+  if (!input.spec.validators.playwrightPath) {
+    return failureResult(startedAt, [
+      findingFromMessage(
+        "validator-config",
+        "Semantic validator requires validators.playwright so the harness can start the dev server.",
+      ),
+    ]);
+  }
+
+  const contractPath = path.join(input.workspacePath, ".harness-context", "acceptance-contract.json");
+  const contract = await readFile(contractPath, "utf8");
+  const serverConfig = await loadDevServerConfig(input.spec.validators.playwrightPath);
+
+  let serverHandle: ReturnType<typeof startDevServer> | null = null;
+  let serverUrl = serverConfig.configuredUrl;
+
+  try {
+    serverHandle = startDevServer(
+      input.workspacePath,
+      serverConfig.command,
+      serverConfig.configuredUrl,
+      "validator",
+    );
+    serverUrl = await serverHandle.detectedUrl;
+    await waitForServer(serverUrl, serverConfig.timeoutMs);
+
+    const prompt = buildValidatorPrompt(contract, serverUrl);
+    const promptPath = path.join(input.promptsDirectory, `validator-attempt-${input.attempt}.txt`);
+    const agentLogPath = path.join(input.logsDirectory, `validator-attempt-${input.attempt}.log`);
+    const agentActivityLogPath = path.join(
+      input.logsDirectory,
+      `validator-attempt-${input.attempt}.activity.log`,
+    );
+
+    await writePromptFile(promptPath, prompt);
+
+    const validator = new CommandAgentProvider(validatorConfig);
+    const agentResult = await validator.run({
+      workspacePath: input.workspacePath,
+      prompt,
+      attempt: input.attempt,
+      role: "validator",
+      timeoutMs: validatorConfig.timeoutMs,
+      logPath: agentLogPath,
+      activityLogPath: agentActivityLogPath,
+    });
+
+    if (agentResult.exitCode !== 0) {
+      return failureResult(
+        startedAt,
+        [
+          findingFromMessage(
+            `validator-exit:${input.attempt}`,
+            agentResult.timedOut
+              ? `Validator agent timed out after ${Math.round(agentResult.durationMs / 1000)}s`
+              : `Validator agent exited with code ${agentResult.exitCode ?? "null"}`,
+            agentResult.stderr || agentResult.stdout,
+          ),
+        ],
+        serverUrl,
+      );
+    }
+
+    const verdict = parseValidatorVerdict(agentResult.stdout);
+    if (!verdict) {
+      return failureResult(
+        startedAt,
+        [
+          findingFromMessage(
+            "validator-output-unparseable",
+            "Validator agent did not return a parseable JSON verdict.",
+            truncate(agentResult.stdout),
+          ),
+        ],
+        serverUrl,
+      );
+    }
+
+    const findings = mapVerdictToFindings(verdict);
+    return {
+      passed: verdict.passed && verdict.issues.length === 0 && findings.length === 0,
+      verdict,
+      findings,
+      serverUrl,
+      durationMs: Date.now() - startedAt,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return failureResult(startedAt, [findingFromMessage("validator-runtime", message)], serverUrl);
+  } finally {
+    await stopDevServer(serverHandle?.process ?? null);
+  }
+}
+
+function mapVerdictToFindings(verdict: ValidatorVerdict): ValidationFinding[] {
+  const findings = verdict.issues.map(issue => mapIssueToFinding(issue));
+
+  if (!verdict.passed && findings.length === 0) {
+    return [
+      findingFromMessage(
+        "validator-empty-issues",
+        "Validator reported failure without listing issues.",
+        verdict.summary,
+      ),
+    ];
+  }
+
+  if (verdict.passed && findings.length > 0) {
+    return [
+      findingFromMessage(
+        "validator-inconsistent",
+        "Validator reported pass=true but listed issues.",
+        verdict.summary,
+      ),
+      ...findings,
+    ];
+  }
+
+  return findings;
+}
+
+function mapIssueToFinding(issue: ValidatorIssue): ValidationFinding {
+  const assertion = issue.contractAssertion ? ` [${issue.contractAssertion}]` : "";
+  const route = issue.route ? ` (${issue.route})` : "";
+  return {
+    id: `semantic:${issue.id}`,
+    category: "semantic",
+    message: `${issue.severity}${assertion}${route}: ${issue.message}`,
+    details: issue.evidence,
+  };
+}
+
+function failureResult(
+  startedAt: number,
+  findings: ValidationFinding[],
+  serverUrl?: string,
+): SemanticValidationResult {
+  return {
+    passed: false,
+    findings,
+    serverUrl,
+    durationMs: Date.now() - startedAt,
+  };
+}
+
+function findingFromMessage(id: string, message: string, details?: string): ValidationFinding {
+  return {
+    id,
+    category: "semantic",
+    message,
+    details: details ? truncate(details) : undefined,
+  };
+}
+
+function truncate(value: string, maxLength = 1200): string {
+  const trimmed = value.trim();
+  if (trimmed.length <= maxLength) return trimmed;
+  return `${trimmed.slice(0, maxLength)}...`;
+}
