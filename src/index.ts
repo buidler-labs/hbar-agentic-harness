@@ -13,8 +13,14 @@ async function main(): Promise<void> {
   await runCli(parsed);
 }
 
-main().catch((error: unknown) => {
-  const message = error instanceof Error ? error.message : String(error);
-  console.error(`Error: ${message}`);
-  process.exitCode = 1;
-});
+main()
+  .then(() => {
+    // Force exit so a leftover Next.js/Playwright handle cannot hang the CLI
+    // after results are printed (see stopDevServer process-group teardown).
+    process.exit(process.exitCode ?? 0);
+  })
+  .catch((error: unknown) => {
+    const message = error instanceof Error ? error.message : String(error);
+    console.error(`Error: ${message}`);
+    process.exit(1);
+  });

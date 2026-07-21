@@ -71,9 +71,12 @@ export function startDevServer(
     );
   }, URL_DETECT_TIMEOUT_MS);
 
+  // detached: true makes this child the leader of a new process group so
+  // stopDevServer can signal -pid and tear down yarn/next grandchildren.
   const child = spawn(command, {
     cwd: workspacePath,
     shell: true,
+    detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: {
       ...process.env,
@@ -145,24 +148,56 @@ export async function waitForServer(url: string, timeoutMs: number): Promise<voi
   throw new Error(`Dev server did not become ready at ${url} within ${timeoutMs}ms (${lastError}).`);
 }
 
-export async function stopDevServer(process: ChildProcess | null): Promise<void> {
-  if (!process || process.killed || process.exitCode !== null) {
+export async function stopDevServer(target: DevServerHandle | ChildProcess | null): Promise<void> {
+  const child = target && "process" in target && "detectedUrl" in target ? target.process : target;
+  if (!child || child.exitCode !== null) {
     return;
   }
 
   await new Promise<void>(resolve => {
-    const forceKill = setTimeout(() => {
-      process.kill("SIGKILL");
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(forceKill);
+      destroyStdio(child);
       resolve();
+    };
+
+    const forceKill = setTimeout(() => {
+      signalProcessTree(child, "SIGKILL");
+      // Don't hang forever if the process group is already gone.
+      setTimeout(finish, 1_000);
     }, 5_000);
 
-    process.once("close", () => {
-      clearTimeout(forceKill);
-      resolve();
-    });
-
-    process.kill("SIGTERM");
+    child.once("close", finish);
+    signalProcessTree(child, "SIGTERM");
   });
+}
+
+/** Kill the shell and its yarn/next descendants (Unix process group). */
+function signalProcessTree(child: ChildProcess, signal: NodeJS.Signals): void {
+  if (!child.pid) {
+    return;
+  }
+
+  try {
+    // Negative PID targets the process group created by detached: true.
+    process.kill(-child.pid, signal);
+  } catch {
+    try {
+      child.kill(signal);
+    } catch {
+      // Already exited.
+    }
+  }
+}
+
+function destroyStdio(child: ChildProcess): void {
+  child.stdout?.removeAllListeners();
+  child.stderr?.removeAllListeners();
+  child.stdout?.destroy();
+  child.stderr?.destroy();
 }
 
 export function extractLocalUrl(text: string): string | null {

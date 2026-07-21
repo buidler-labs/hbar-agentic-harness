@@ -130,7 +130,7 @@ export async function runSemanticValidation(input: {
     const message = error instanceof Error ? error.message : String(error);
     return failureResult(startedAt, [findingFromMessage("validator-runtime", message)], serverUrl);
   } finally {
-    await stopDevServer(serverHandle?.process ?? null);
+    await stopDevServer(serverHandle);
   }
 }
 

@@ -162,7 +162,7 @@ export async function runPlaywrightGate(
     if (browser) {
       await browser.close().catch(() => undefined);
     }
-    await stopDevServer(serverHandle?.process ?? null);
+    await stopDevServer(serverHandle);
   }
 
   const result: PlaywrightGateResult = {
