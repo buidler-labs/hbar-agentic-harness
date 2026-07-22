@@ -344,6 +344,8 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
         passed: semanticValidation.passed,
         findingCount: semanticValidation.findings.length,
         durationMs: semanticValidation.durationMs,
+        infrastructureFailure: semanticValidation.infrastructureFailure,
+        infrastructureFailureReason: semanticValidation.infrastructureFailureReason,
       });
 
       if (!semanticValidation.passed) {
@@ -367,13 +369,54 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
         passed: validation.passed,
         findingCount: validation.findings.length,
         semanticPassed: semanticValidation.passed,
+        infrastructureFailure: semanticValidation.infrastructureFailure ?? false,
       });
       logPhase(
         `Attempt ${attempts} semantic validation ${semanticValidation.passed ? "passed" : "failed"}`,
         semanticValidation.passed
           ? semanticValidation.verdict?.summary
-          : `${semanticValidation.findings.length} finding(s)`,
+          : semanticValidation.infrastructureFailure
+            ? `infrastructure: ${semanticValidation.infrastructureFailureReason}`
+            : `${semanticValidation.findings.length} finding(s)`,
       );
+
+      if (semanticValidation.infrastructureFailure) {
+        await appendHarnessLog(layout.jsonlLogPath, {
+          type: "validator_infra_aborted",
+          timestamp: new Date().toISOString(),
+          attempt: attempts,
+          reason: semanticValidation.infrastructureFailureReason ?? "semantic infrastructure failure",
+        });
+        await appendHarnessNote(
+          layout.notesLogPath,
+          `Attempt ${attempts} semantic infrastructure abort`,
+          [
+            "Repair loop aborted: failure is harness/agent tooling, not the generated app.",
+            semanticValidation.infrastructureFailureReason ?? "(no reason)",
+            ...semanticValidation.findings.map(finding => `- [${finding.category}] ${finding.message}`),
+          ].join("\n"),
+        );
+        logPhase(
+          "Aborting repair loop after semantic infrastructure failure",
+          semanticValidation.infrastructureFailureReason,
+        );
+
+        const gitCommit = await commitWorkspaceAttempt(
+          seedResult.workspacePath,
+          attempts,
+          false,
+          validation.findings.length,
+        );
+        await appendHarnessLog(layout.jsonlLogPath, {
+          type: "workspace_git_committed",
+          timestamp: new Date().toISOString(),
+          attempt: attempts,
+          committed: gitCommit.committed,
+          commitSha: gitCommit.commitSha,
+          message: gitCommit.message,
+        });
+        break;
+      }
     }
 
     await appendHarnessNote(

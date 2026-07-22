@@ -11,6 +11,7 @@ import type {
   ValidatorVerdict,
 } from "./types.js";
 import { parseValidatorVerdict } from "./validatorVerdictParser.js";
+import { annotateInfrastructureFailure } from "./semanticInfra.js";
 import { loadDevServerConfig, startDevServer, stopDevServer, waitForServer } from "./validation/devServer.js";
 
 export function isValidatorEnabled(spec: TemplateSpec): boolean {
@@ -35,18 +36,22 @@ export async function runSemanticValidation(input: {
   }
 
   if (!input.spec.contractPath) {
-    return failureResult(startedAt, [
-      findingFromMessage("validator-config", "Semantic validator requires spec.contract to be configured."),
-    ]);
+    return annotateInfrastructureFailure(
+      failureResult(startedAt, [
+        findingFromMessage("validator-config", "Semantic validator requires spec.contract to be configured."),
+      ]),
+    );
   }
 
   if (!input.spec.validators.playwrightPath) {
-    return failureResult(startedAt, [
-      findingFromMessage(
-        "validator-config",
-        "Semantic validator requires validators.playwright so the harness can start the dev server.",
-      ),
-    ]);
+    return annotateInfrastructureFailure(
+      failureResult(startedAt, [
+        findingFromMessage(
+          "validator-config",
+          "Semantic validator requires validators.playwright so the harness can start the dev server.",
+        ),
+      ]),
+    );
   }
 
   const contractPath = path.join(input.workspacePath, ".harness-context", "acceptance-contract.json");
@@ -88,47 +93,53 @@ export async function runSemanticValidation(input: {
     });
 
     if (agentResult.exitCode !== 0) {
-      return failureResult(
-        startedAt,
-        [
-          findingFromMessage(
-            `validator-exit:${input.attempt}`,
-            agentResult.timedOut
-              ? `Validator agent timed out after ${Math.round(agentResult.durationMs / 1000)}s`
-              : `Validator agent exited with code ${agentResult.exitCode ?? "null"}`,
-            agentResult.stderr || agentResult.stdout,
-          ),
-        ],
-        serverUrl,
+      return annotateInfrastructureFailure(
+        failureResult(
+          startedAt,
+          [
+            findingFromMessage(
+              `validator-exit:${input.attempt}`,
+              agentResult.timedOut
+                ? `Validator agent timed out after ${Math.round(agentResult.durationMs / 1000)}s`
+                : `Validator agent exited with code ${agentResult.exitCode ?? "null"}`,
+              agentResult.stderr || agentResult.stdout,
+            ),
+          ],
+          serverUrl,
+        ),
       );
     }
 
     const verdict = parseValidatorVerdict(agentResult.stdout);
     if (!verdict) {
-      return failureResult(
-        startedAt,
-        [
-          findingFromMessage(
-            "validator-output-unparseable",
-            "Validator agent did not return a parseable JSON verdict.",
-            truncate(agentResult.stdout),
-          ),
-        ],
-        serverUrl,
+      return annotateInfrastructureFailure(
+        failureResult(
+          startedAt,
+          [
+            findingFromMessage(
+              "validator-output-unparseable",
+              "Validator agent did not return a parseable JSON verdict.",
+              truncate(agentResult.stdout),
+            ),
+          ],
+          serverUrl,
+        ),
       );
     }
 
     const findings = mapVerdictToFindings(verdict);
-    return {
+    return annotateInfrastructureFailure({
       passed: verdict.passed && verdict.issues.length === 0 && findings.length === 0,
       verdict,
       findings,
       serverUrl,
       durationMs: Date.now() - startedAt,
-    };
+    });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    return failureResult(startedAt, [findingFromMessage("validator-runtime", message)], serverUrl);
+    return annotateInfrastructureFailure(
+      failureResult(startedAt, [findingFromMessage("validator-runtime", message)], serverUrl),
+    );
   } finally {
     await stopDevServer(serverHandle);
   }

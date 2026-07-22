@@ -74,8 +74,11 @@ export async function runCli(parsed: ParsedCli): Promise<void> {
         `passed=${result.passed}`,
         `findings=${result.findings.length}`,
         `durationMs=${result.durationMs}`,
+        result.infrastructureFailure
+          ? `infrastructureFailure=true reason=${result.infrastructureFailureReason}`
+          : undefined,
         result.verdict?.summary ? `summary=${result.verdict.summary}` : undefined,
-        ...result.findings.map(finding => `- ${finding.message}`),
+        ...result.findings.map(finding => `- [${finding.category}] ${finding.message}`),
       ]
         .filter((line): line is string => Boolean(line))
         .join("\n"),

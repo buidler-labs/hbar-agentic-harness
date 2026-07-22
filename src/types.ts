@@ -186,11 +186,23 @@ export interface SemanticValidationResult {
   findings: ValidationFinding[];
   serverUrl?: string;
   durationMs: number;
+  /** True when failure is harness/agent tooling (MCP/browser), not the generated app. */
+  infrastructureFailure?: boolean;
+  infrastructureFailureReason?: string;
 }
 
 export interface ValidationFinding {
   id: string;
-  category: "files" | "static" | "secret" | "commands" | "agent" | "oracle" | "playwright" | "semantic";
+  category:
+    | "files"
+    | "static"
+    | "secret"
+    | "commands"
+    | "agent"
+    | "oracle"
+    | "playwright"
+    | "semantic"
+    | "semantic-infra";
   message: string;
   details?: string;
 }
@@ -317,6 +329,14 @@ export type HarnessLogEvent =
       passed: boolean;
       findingCount: number;
       durationMs: number;
+      infrastructureFailure?: boolean;
+      infrastructureFailureReason?: string;
+    }
+  | {
+      type: "validator_infra_aborted";
+      timestamp: string;
+      attempt: number;
+      reason: string;
     }
   | {
       type: "repair_started";

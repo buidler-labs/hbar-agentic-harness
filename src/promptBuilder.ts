@@ -120,6 +120,7 @@ export function buildRepairPrompt(
     "- Do not add secrets or `.env` files.",
     "- Preserve scaffold-hbar template conventions.",
     "- Fix findings in priority order: [agent] process failures, [commands] build/lint, [playwright] runtime gate, [semantic] contract assertions, then [files]/[static]/[secret].",
+    "- Do NOT attempt to fix [semantic-infra] findings — those are harness/tooling failures (MCP/browser), not app defects.",
     "- Re-run the relevant validation mentally before finishing.",
     "",
     "Append a brief repair note to `GENERATION_NOTES.md` at the workspace root, describing what failed and what you changed.",
