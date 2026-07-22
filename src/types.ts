@@ -11,6 +11,8 @@ export interface CommandExecutionResult {
   durationMs: number;
   timedOut: boolean;
   signal: NodeJS.Signals | null;
+  skipped?: boolean;
+  skipReason?: string;
 }
 
 export interface CliOptions {

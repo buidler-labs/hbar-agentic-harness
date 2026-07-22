@@ -7,6 +7,7 @@ import {
   stopDevServer,
   waitForServer,
   type DevServerHandle,
+  type DevServerSession,
 } from "./devServer.js";
 
 interface PlaywrightGateConfig {
@@ -32,6 +33,7 @@ interface PlaywrightGateConfig {
 export async function runPlaywrightGate(
   workspacePath: string,
   configPath: string,
+  existingDevServer?: DevServerSession,
 ): Promise<{ result: PlaywrightGateResult; findings: ValidationFinding[] }> {
   const startedAt = Date.now();
   const config = await loadPlaywrightGateConfig(configPath);
@@ -41,22 +43,28 @@ export async function runPlaywrightGate(
   const forbiddenText = config.forbidden?.visibleText ?? [];
 
   let serverHandle: DevServerHandle | null = null;
+  let ownsServer = false;
   let browser: Browser | null = null;
-  let serverUrl = config.server.url;
+  let serverUrl = existingDevServer?.url ?? config.server.url;
   const routeResults: PlaywrightGateRouteResult[] = [];
   const findings: ValidationFinding[] = [];
 
   try {
-    serverHandle = startDevServer(workspacePath, config.server.command, config.server.url, "playwright");
-    serverUrl = await serverHandle.detectedUrl;
+    if (existingDevServer) {
+      serverUrl = existingDevServer.url;
+    } else {
+      ownsServer = true;
+      serverHandle = startDevServer(workspacePath, config.server.command, config.server.url, "playwright");
+      serverUrl = await serverHandle.detectedUrl;
 
-    if (serverUrl !== config.server.url) {
-      console.log(
-        `[hbar-harness] Playwright gate using detected dev server ${serverUrl} (config specified ${config.server.url})`,
-      );
+      if (serverUrl !== config.server.url) {
+        console.log(
+          `[hbar-harness] Playwright gate using detected dev server ${serverUrl} (config specified ${config.server.url})`,
+        );
+      }
+
+      await waitForServer(serverUrl, serverTimeoutMs);
     }
-
-    await waitForServer(serverUrl, serverTimeoutMs);
 
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext();
@@ -162,14 +170,16 @@ export async function runPlaywrightGate(
     if (browser) {
       await browser.close().catch(() => undefined);
     }
-    await stopDevServer(serverHandle);
+    if (ownsServer) {
+      await stopDevServer(serverHandle);
+    }
   }
 
   const result: PlaywrightGateResult = {
     passed: findings.length === 0,
     configPath,
     serverUrl,
-    serverCommand: config.server.command,
+    serverCommand: existingDevServer?.serverCommand ?? config.server.command,
     routes: routeResults,
     durationMs: Date.now() - startedAt,
   };

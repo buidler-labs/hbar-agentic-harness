@@ -12,7 +12,7 @@ import type {
 } from "./types.js";
 import { parseValidatorVerdict } from "./validatorVerdictParser.js";
 import { annotateInfrastructureFailure } from "./semanticInfra.js";
-import { loadDevServerConfig, startDevServer, stopDevServer, waitForServer } from "./validation/devServer.js";
+import { loadDevServerConfig, startDevServer, stopDevServer, waitForServer, type DevServerSession } from "./validation/devServer.js";
 
 export function isValidatorEnabled(spec: TemplateSpec): boolean {
   return spec.validator !== undefined && spec.validator.enabled !== false;
@@ -24,6 +24,7 @@ export async function runSemanticValidation(input: {
   attempt: number;
   logsDirectory: string;
   promptsDirectory: string;
+  devServer?: DevServerSession;
 }): Promise<SemanticValidationResult> {
   const startedAt = Date.now();
   const validatorConfig = input.spec.validator;
@@ -59,17 +60,23 @@ export async function runSemanticValidation(input: {
   const serverConfig = await loadDevServerConfig(input.spec.validators.playwrightPath);
 
   let serverHandle: ReturnType<typeof startDevServer> | null = null;
-  let serverUrl = serverConfig.configuredUrl;
+  let ownsServer = false;
+  let serverUrl = input.devServer?.url ?? serverConfig.configuredUrl;
 
   try {
-    serverHandle = startDevServer(
-      input.workspacePath,
-      serverConfig.command,
-      serverConfig.configuredUrl,
-      "validator",
-    );
-    serverUrl = await serverHandle.detectedUrl;
-    await waitForServer(serverUrl, serverConfig.timeoutMs);
+    if (input.devServer) {
+      serverUrl = input.devServer.url;
+    } else {
+      ownsServer = true;
+      serverHandle = startDevServer(
+        input.workspacePath,
+        serverConfig.command,
+        serverConfig.configuredUrl,
+        "validator",
+      );
+      serverUrl = await serverHandle.detectedUrl;
+      await waitForServer(serverUrl, serverConfig.timeoutMs);
+    }
 
     const prompt = buildValidatorPrompt(contract, serverUrl);
     const promptPath = path.join(input.promptsDirectory, `validator-attempt-${input.attempt}.txt`);
@@ -141,7 +148,9 @@ export async function runSemanticValidation(input: {
       failureResult(startedAt, [findingFromMessage("validator-runtime", message)], serverUrl),
     );
   } finally {
-    await stopDevServer(serverHandle);
+    if (ownsServer) {
+      await stopDevServer(serverHandle);
+    }
   }
 }
 

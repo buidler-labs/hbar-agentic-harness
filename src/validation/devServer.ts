@@ -17,6 +17,37 @@ export interface DevServerConfig {
   timeoutMs: number;
 }
 
+/** Live dev server reused by Playwright gate and semantic validator within one attempt. */
+export interface DevServerSession {
+  readonly url: string;
+  readonly serverCommand: string;
+  stop(): Promise<void>;
+}
+
+export async function createDevServerSession(
+  workspacePath: string,
+  config: DevServerConfig,
+  logPrefix = "dev",
+): Promise<DevServerSession> {
+  const handle = startDevServer(workspacePath, config.command, config.configuredUrl, logPrefix);
+  const url = await handle.detectedUrl;
+  await waitForServer(url, config.timeoutMs);
+
+  if (url !== config.configuredUrl) {
+    console.log(
+      `[hbar-harness] Dev server using detected URL ${url} (config specified ${config.configuredUrl})`,
+    );
+  }
+
+  return {
+    url,
+    serverCommand: config.command,
+    async stop() {
+      await stopDevServer(handle);
+    },
+  };
+}
+
 export async function loadDevServerConfig(playwrightConfigPath: string): Promise<DevServerConfig> {
   const raw = await readFile(playwrightConfigPath, "utf8");
   const parsed = parseYaml(raw) as {

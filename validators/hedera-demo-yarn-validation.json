@@ -1,7 +1,7 @@
 {
   "$schema": "./command-validator.schema.json",
   "name": "hedera-demo-yarn-validation",
-  "description": "Yarn-only deterministic validation for the hedera-demo baseline template.",
+  "description": "Yarn-only deterministic validation for the hedera-demo baseline template. Production build covers TypeScript checks (no separate next:check-types).",
   "requiresNoSecrets": true,
   "forbiddenCommands": [
     "npm install",
@@ -24,12 +24,6 @@
       "command": "yarn lint",
       "timeoutMs": 180000,
       "purpose": "Run the frontend lint command exposed by the root package."
-    },
-    {
-      "name": "typecheck",
-      "command": "yarn next:check-types",
-      "timeoutMs": 180000,
-      "purpose": "Run TypeScript checks for the Next.js workspace."
     },
     {
       "name": "build",

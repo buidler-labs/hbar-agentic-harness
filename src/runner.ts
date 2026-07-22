@@ -17,6 +17,8 @@ import type {
   CliOptions,
   RunReport,
   SemanticValidationResult,
+  TemplateSpec,
+  ValidationFinding,
   ValidationResult,
 } from "./types.js";
 import { auditOracleAccess } from "./oracleAudit.js";
@@ -25,6 +27,8 @@ import { vendorSkills } from "./skillVendor.js";
 import { commitWorkspaceAttempt, initWorkspaceGit } from "./workspaceGit.js";
 import { runDeterministicValidation } from "./validation/index.js";
 import { isValidatorEnabled, runSemanticValidation } from "./semanticValidator.js";
+import { createDevServerSession, loadDevServerConfig } from "./validation/devServer.js";
+import { runPlaywrightGate } from "./validation/playwrightGate.js";
 import { WorkspaceWatcher } from "./workspaceWatcher.js";
 import { seedWorkspace } from "./workspaceSeeder.js";
 
@@ -264,14 +268,24 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
           : `Generator agent exited with code ${agentResult.exitCode ?? "null"}`,
         details: truncate(agentResult.stderr || agentResult.stdout),
       };
-      const deterministicValidation = await runDeterministicValidation(seedResult.workspacePath, spec);
-      validation = {
-        passed: false,
-        findings: [agentFinding, ...deterministicValidation.findings],
-        commandResults: deterministicValidation.commandResults,
-      };
+      validation = await runAttemptValidation({
+        workspacePath: seedResult.workspacePath,
+        spec,
+        runDirectory: layout.runDirectory,
+        attempts,
+        agentFinding,
+        jsonlLogPath: layout.jsonlLogPath,
+      });
     } else {
-      validation = await runDeterministicValidation(seedResult.workspacePath, spec);
+      validation = await runAttemptValidation({
+        workspacePath: seedResult.workspacePath,
+        spec,
+        runDirectory: layout.runDirectory,
+        attempts,
+        logsDirectory: layout.logsDirectory,
+        promptsDirectory: layout.promptsDirectory,
+        jsonlLogPath: layout.jsonlLogPath,
+      });
     }
 
     const validationLogPath = path.join(layout.logsDirectory, `validation-attempt-${attempts}.json`);
@@ -289,134 +303,73 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
       findingCount: validation.findings.length,
     });
 
-    if (!(validation.passed && isValidatorEnabled(spec))) {
+    if (!(validation.passed && !validation.semanticValidation)) {
       await writeStatusFile(layout.runDirectory, {
         phase: "validated",
         attempt: attempts,
         passed: validation.passed,
         findingCount: validation.findings.length,
+        semanticPassed: validation.semanticValidation?.passed,
+        infrastructureFailure: validation.semanticValidation?.infrastructureFailure ?? false,
       });
     }
 
-    logPhase(
-      `Attempt ${attempts} deterministic validation ${validation.passed ? "passed" : "failed"}`,
-      validation.passed
-        ? validation.playwrightGate
-          ? `playwright gate passed (${validation.playwrightGate.routes.length} routes)`
-          : undefined
-        : `${validation.findings.length} finding(s)`,
-    );
-
-    if (validation.passed && isValidatorEnabled(spec)) {
-      const validatorPromptPath = path.join(layout.promptsDirectory, `validator-attempt-${attempts}.txt`);
-      const configuredUrl = validation.playwrightGate?.serverUrl ?? "http://localhost:3000";
-
-      await appendHarnessLog(layout.jsonlLogPath, {
-        type: "validator_started",
-        timestamp: new Date().toISOString(),
-        attempt: attempts,
-        promptPath: validatorPromptPath,
-        serverUrl: configuredUrl,
-      });
-      await writeStatusFile(layout.runDirectory, {
-        phase: "validator_running",
-        attempt: attempts,
-        promptPath: validatorPromptPath,
-        serverUrl: configuredUrl,
-      });
-      logPhase(`Validator attempt ${attempts} started`, configuredUrl);
-
-      const semanticValidation = await runSemanticValidation({
-        workspacePath: seedResult.workspacePath,
-        spec,
-        attempt: attempts,
-        logsDirectory: layout.logsDirectory,
-        promptsDirectory: layout.promptsDirectory,
-      });
-
-      const semanticLogPath = path.join(layout.logsDirectory, `semantic-validation-attempt-${attempts}.json`);
-      await writeJsonFile(semanticLogPath, semanticValidation);
-
-      await appendHarnessLog(layout.jsonlLogPath, {
-        type: "validator_finished",
-        timestamp: new Date().toISOString(),
-        attempt: attempts,
-        passed: semanticValidation.passed,
-        findingCount: semanticValidation.findings.length,
-        durationMs: semanticValidation.durationMs,
-        infrastructureFailure: semanticValidation.infrastructureFailure,
-        infrastructureFailureReason: semanticValidation.infrastructureFailureReason,
-      });
-
-      if (!semanticValidation.passed) {
-        validation = {
-          ...validation,
-          passed: false,
-          findings: [...validation.findings, ...semanticValidation.findings],
-          semanticValidation,
-        };
-      } else {
-        validation = {
-          ...validation,
-          semanticValidation,
-        };
-      }
-
-      await writeJsonFile(validationLogPath, validation);
-      await writeStatusFile(layout.runDirectory, {
-        phase: "validated",
-        attempt: attempts,
-        passed: validation.passed,
-        findingCount: validation.findings.length,
-        semanticPassed: semanticValidation.passed,
-        infrastructureFailure: semanticValidation.infrastructureFailure ?? false,
-      });
+    if (validation.semanticValidation) {
       logPhase(
-        `Attempt ${attempts} semantic validation ${semanticValidation.passed ? "passed" : "failed"}`,
-        semanticValidation.passed
-          ? semanticValidation.verdict?.summary
-          : semanticValidation.infrastructureFailure
-            ? `infrastructure: ${semanticValidation.infrastructureFailureReason}`
-            : `${semanticValidation.findings.length} finding(s)`,
+        `Attempt ${attempts} semantic validation ${validation.semanticValidation.passed ? "passed" : "failed"}`,
+        validation.semanticValidation.passed
+          ? validation.semanticValidation.verdict?.summary
+          : validation.semanticValidation.infrastructureFailure
+            ? `infrastructure: ${validation.semanticValidation.infrastructureFailureReason}`
+            : `${validation.semanticValidation.findings.length} finding(s)`,
+      );
+    } else {
+      logPhase(
+        `Attempt ${attempts} deterministic validation ${validation.passed ? "passed" : "failed"}`,
+        validation.passed
+          ? validation.playwrightGate
+            ? `playwright gate passed (${validation.playwrightGate.routes.length} routes)`
+            : undefined
+          : `${validation.findings.length} finding(s)`,
+      );
+    }
+
+    if (validation.semanticValidation?.infrastructureFailure) {
+      await appendHarnessLog(layout.jsonlLogPath, {
+        type: "validator_infra_aborted",
+        timestamp: new Date().toISOString(),
+        attempt: attempts,
+        reason: validation.semanticValidation.infrastructureFailureReason ?? "semantic infrastructure failure",
+      });
+      await appendHarnessNote(
+        layout.notesLogPath,
+        `Attempt ${attempts} semantic infrastructure abort`,
+        [
+          "Repair loop aborted: failure is harness/agent tooling, not the generated app.",
+          validation.semanticValidation.infrastructureFailureReason ?? "(no reason)",
+          ...validation.semanticValidation.findings.map(finding => `- [${finding.category}] ${finding.message}`),
+        ].join("\n"),
+      );
+      logPhase(
+        "Aborting repair loop after semantic infrastructure failure",
+        validation.semanticValidation.infrastructureFailureReason,
       );
 
-      if (semanticValidation.infrastructureFailure) {
-        await appendHarnessLog(layout.jsonlLogPath, {
-          type: "validator_infra_aborted",
-          timestamp: new Date().toISOString(),
-          attempt: attempts,
-          reason: semanticValidation.infrastructureFailureReason ?? "semantic infrastructure failure",
-        });
-        await appendHarnessNote(
-          layout.notesLogPath,
-          `Attempt ${attempts} semantic infrastructure abort`,
-          [
-            "Repair loop aborted: failure is harness/agent tooling, not the generated app.",
-            semanticValidation.infrastructureFailureReason ?? "(no reason)",
-            ...semanticValidation.findings.map(finding => `- [${finding.category}] ${finding.message}`),
-          ].join("\n"),
-        );
-        logPhase(
-          "Aborting repair loop after semantic infrastructure failure",
-          semanticValidation.infrastructureFailureReason,
-        );
-
-        const gitCommit = await commitWorkspaceAttempt(
-          seedResult.workspacePath,
-          attempts,
-          false,
-          validation.findings.length,
-        );
-        await appendHarnessLog(layout.jsonlLogPath, {
-          type: "workspace_git_committed",
-          timestamp: new Date().toISOString(),
-          attempt: attempts,
-          committed: gitCommit.committed,
-          commitSha: gitCommit.commitSha,
-          message: gitCommit.message,
-        });
-        break;
-      }
+      const gitCommit = await commitWorkspaceAttempt(
+        seedResult.workspacePath,
+        attempts,
+        false,
+        validation.findings.length,
+      );
+      await appendHarnessLog(layout.jsonlLogPath, {
+        type: "workspace_git_committed",
+        timestamp: new Date().toISOString(),
+        attempt: attempts,
+        committed: gitCommit.committed,
+        commitSha: gitCommit.commitSha,
+        message: gitCommit.message,
+      });
+      break;
     }
 
     await appendHarnessNote(
@@ -584,6 +537,119 @@ export async function validateSemanticWorkspace(options: CliOptions): Promise<Se
   );
 
   return result;
+}
+
+async function runAttemptValidation(input: {
+  workspacePath: string;
+  spec: TemplateSpec;
+  runDirectory: string;
+  attempts: number;
+  logsDirectory?: string;
+  promptsDirectory?: string;
+  jsonlLogPath?: string;
+  agentFinding?: ValidationFinding;
+}): Promise<ValidationResult> {
+  const installCachePath = path.join(input.runDirectory, "cache", "install-fingerprint.txt");
+  const useSharedDevServer =
+    isValidatorEnabled(input.spec) && Boolean(input.spec.validators.playwrightPath);
+
+  const detOptions = {
+    skipPlaywrightGate: useSharedDevServer,
+    installCachePath,
+  };
+
+  let validation: ValidationResult;
+  if (input.agentFinding) {
+    const deterministic = await runDeterministicValidation(input.workspacePath, input.spec, detOptions);
+    validation = {
+      passed: false,
+      findings: [input.agentFinding, ...deterministic.findings],
+      commandResults: deterministic.commandResults,
+      playwrightGate: deterministic.playwrightGate,
+    };
+  } else {
+    validation = await runDeterministicValidation(input.workspacePath, input.spec, detOptions);
+  }
+
+  const tier01Passed = validation.findings.filter(finding => finding.category !== "agent").length === 0;
+  if (!useSharedDevServer || !tier01Passed || input.agentFinding) {
+    return validation;
+  }
+
+  const playwrightPath = input.spec.validators.playwrightPath!;
+  let devSession = null;
+  try {
+    const serverConfig = await loadDevServerConfig(playwrightPath);
+    devSession = await createDevServerSession(input.workspacePath, serverConfig, "runtime");
+
+    console.log("[hbar-harness] Running thin Playwright gate (shared dev server)...");
+    const gate = await runPlaywrightGate(input.workspacePath, playwrightPath, devSession);
+    validation.playwrightGate = gate.result;
+    validation.findings.push(...gate.findings);
+    validation.passed = validation.findings.filter(finding => finding.category !== "agent").length === 0;
+
+    if (!validation.passed || !input.logsDirectory || !input.promptsDirectory) {
+      return validation;
+    }
+
+    const validatorPromptPath = path.join(input.promptsDirectory, `validator-attempt-${input.attempts}.txt`);
+    if (input.jsonlLogPath) {
+      await appendHarnessLog(input.jsonlLogPath, {
+        type: "validator_started",
+        timestamp: new Date().toISOString(),
+        attempt: input.attempts,
+        promptPath: validatorPromptPath,
+        serverUrl: devSession.url,
+      });
+    }
+    logPhase(`Validator attempt ${input.attempts} started`, devSession.url);
+
+    const semanticValidation = await runSemanticValidation({
+      workspacePath: input.workspacePath,
+      spec: input.spec,
+      attempt: input.attempts,
+      logsDirectory: input.logsDirectory,
+      promptsDirectory: input.promptsDirectory,
+      devServer: devSession,
+    });
+
+    const semanticLogPath = path.join(
+      input.logsDirectory,
+      `semantic-validation-attempt-${input.attempts}.json`,
+    );
+    await writeJsonFile(semanticLogPath, semanticValidation);
+
+    if (input.jsonlLogPath) {
+      await appendHarnessLog(input.jsonlLogPath, {
+        type: "validator_finished",
+        timestamp: new Date().toISOString(),
+        attempt: input.attempts,
+        passed: semanticValidation.passed,
+        findingCount: semanticValidation.findings.length,
+        durationMs: semanticValidation.durationMs,
+        infrastructureFailure: semanticValidation.infrastructureFailure,
+        infrastructureFailureReason: semanticValidation.infrastructureFailureReason,
+      });
+    }
+
+    if (!semanticValidation.passed) {
+      validation = {
+        ...validation,
+        passed: false,
+        findings: [...validation.findings, ...semanticValidation.findings],
+        semanticValidation,
+      };
+    } else {
+      validation = {
+        ...validation,
+        semanticValidation,
+      };
+    }
+  } finally {
+    await devSession?.stop();
+  }
+
+  return validation;
 }
 
 async function resolveSemanticArtifactDirs(workspacePath: string): Promise<{

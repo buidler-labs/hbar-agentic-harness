@@ -9,6 +9,18 @@ import type {
   ValidationResult,
 } from "../types.js";
 import { runPlaywrightGate } from "./playwrightGate.js";
+import {
+  computeInstallFingerprint,
+  readCachedInstallFingerprint,
+  writeCachedInstallFingerprint,
+} from "./installFingerprint.js";
+
+export interface DeterministicValidationOptions {
+  /** When true, Playwright gate is omitted (caller runs it with a shared dev server). */
+  skipPlaywrightGate?: boolean;
+  /** Persist install fingerprint across attempts under this run cache path. */
+  installCachePath?: string;
+}
 
 interface StaticValidatorConfig {
   jsonAssertions?: Array<{
@@ -45,6 +57,7 @@ interface CommandValidatorConfig {
 export async function runDeterministicValidation(
   workspacePath: string,
   spec: TemplateSpec,
+  options: DeterministicValidationOptions = {},
 ): Promise<ValidationResult> {
   const findings: ValidationFinding[] = [];
   const commandResults: CommandExecutionResult[] = [];
@@ -54,12 +67,16 @@ export async function runDeterministicValidation(
   findings.push(...(await validateStaticConfig(workspacePath, spec.validators.staticPath)));
   findings.push(...(await validateSecretScan(workspacePath, spec)));
 
-  const commandValidation = await validateCommands(workspacePath, spec.validators.commandsPath);
+  const commandValidation = await validateCommands(
+    workspacePath,
+    spec.validators.commandsPath,
+    options.installCachePath,
+  );
   findings.push(...commandValidation.findings);
   commandResults.push(...commandValidation.commandResults);
 
   let playwrightGate: PlaywrightGateResult | undefined;
-  if (spec.validators.playwrightPath) {
+  if (spec.validators.playwrightPath && !options.skipPlaywrightGate) {
     if (commandValidation.findings.length === 0) {
       console.log("[hbar-harness] Running thin Playwright gate...");
       const gate = await runPlaywrightGate(workspacePath, spec.validators.playwrightPath);
@@ -229,13 +246,38 @@ async function scanSecrets(
   return findings;
 }
 
-async function validateCommands(workspacePath: string, commandsPath: string) {
+async function validateCommands(
+  workspacePath: string,
+  commandsPath: string,
+  installCachePath?: string,
+) {
   const raw = await readFile(commandsPath, "utf8");
   const config = JSON.parse(raw) as CommandValidatorConfig;
   const findings: ValidationFinding[] = [];
   const commandResults: CommandExecutionResult[] = [];
 
   for (const commandConfig of config.commands) {
+    if (commandConfig.name === "install" && installCachePath) {
+      const currentFingerprint = await computeInstallFingerprint(workspacePath);
+      const cachedFingerprint = await readCachedInstallFingerprint(installCachePath);
+      if (cachedFingerprint && cachedFingerprint === currentFingerprint) {
+        console.log("[hbar-harness] Skipping yarn install (dependency fingerprint unchanged).");
+        commandResults.push({
+          command: commandConfig.command,
+          args: [],
+          exitCode: 0,
+          stdout: "skipped: dependency fingerprint unchanged",
+          stderr: "",
+          durationMs: 0,
+          timedOut: false,
+          signal: null,
+          skipped: true,
+          skipReason: "fingerprint-unchanged",
+        });
+        continue;
+      }
+    }
+
     const result = await executeCommand({
       command: commandConfig.command,
       cwd: workspacePath,
@@ -251,6 +293,12 @@ async function validateCommands(workspacePath: string, commandsPath: string) {
         message: `Validation command failed: ${commandConfig.name}`,
         details: truncateOutput(result.stderr || result.stdout),
       });
+      continue;
+    }
+
+    if (commandConfig.name === "install" && installCachePath) {
+      const fingerprint = await computeInstallFingerprint(workspacePath);
+      await writeCachedInstallFingerprint(installCachePath, fingerprint);
     }
   }
 
