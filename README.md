@@ -116,6 +116,12 @@ Re-run validation only on an existing workspace:
 npm run harness -- validate specs/my-template.yaml --workspace runs/<run-id>/workspace
 ```
 
+Re-run semantic (Tier 3 / acceptance contract) validation only:
+
+```bash
+npm run harness -- validate-semantic specs/my-template.yaml --workspace runs/<run-id>/workspace
+```
+
 ## Repository layout
 
 ```
@@ -152,7 +158,7 @@ Cross-run logs (append-only):
 | `npm run build` | Compile TypeScript to `dist/` |
 | `npm run typecheck` | Type-check without emitting |
 
-CLI commands: `run`, `validate` (`supervise` is not implemented yet).
+CLI commands: `run`, `validate`, `validate-semantic` (`supervise` is not implemented yet).
 
 ## Design notes
 

@@ -40,8 +40,10 @@ validator:
   args:
     - -p
     - --trust
+    - --force
     - --sandbox
-    - enabled
+    - disabled
+    - --approve-mcps
     - --workspace
     - "{workspace}"
     - --model
@@ -50,6 +52,7 @@ validator:
     - stream-json
     - --stream-partial-output
   timeoutMs: 600000
+
 
 skills:
   - /Users/sebastianraba/Work/hedera-skills/plugins/dev-intelligence/skills/project-scaffolding/SKILL.md

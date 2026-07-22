@@ -174,16 +174,16 @@ async function finalizeAgentLog(
 function buildArgs(
   configArgs: string[],
   input: { prompt: string; workspacePath: string },
-  role?: "generator" | "validator",
+  _role?: "generator" | "validator",
 ): string[] {
-  const effectiveArgs =
-    role === "validator" ? configArgs.filter(arg => arg !== "--force") : configArgs;
-  const replaced = effectiveArgs.map(arg =>
+  // Keep --force for validators: headless Cursor rejects non-readonly MCP tool
+  // calls (e.g. browser_navigate) without it. Edit isolation is prompt-enforced.
+  const replaced = configArgs.map(arg =>
     arg
       .replaceAll(WORKSPACE_PLACEHOLDER, input.workspacePath)
       .replaceAll(PROMPT_PLACEHOLDER, input.prompt),
   );
-  const hasPromptPlaceholder = effectiveArgs.some(arg => arg.includes(PROMPT_PLACEHOLDER));
+  const hasPromptPlaceholder = configArgs.some(arg => arg.includes(PROMPT_PLACEHOLDER));
   return hasPromptPlaceholder ? replaced : [...replaced, input.prompt];
 }
 

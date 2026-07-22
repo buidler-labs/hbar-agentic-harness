@@ -1,4 +1,5 @@
 import path from "node:path";
+import { access, mkdir, readdir } from "node:fs/promises";
 import { CommandAgentProvider } from "./providers/commandAgentProvider.js";
 import { buildGeneratorPrompt, buildRepairPrompt } from "./promptBuilder.js";
 import {
@@ -11,7 +12,13 @@ import {
 } from "./runArtifacts.js";
 import { loadTemplateSpec } from "./specLoader.js";
 import type { AgentProgress } from "./agentStreamLogger.js";
-import type { BlindIntegrityResult, CliOptions, RunReport, ValidationResult } from "./types.js";
+import type {
+  BlindIntegrityResult,
+  CliOptions,
+  RunReport,
+  SemanticValidationResult,
+  ValidationResult,
+} from "./types.js";
 import { auditOracleAccess } from "./oracleAudit.js";
 import { vendorHarnessContext } from "./contextVendor.js";
 import { vendorSkills } from "./skillVendor.js";
@@ -92,7 +99,7 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
   });
   logPhase(
     "Harness context vendored into workspace",
-    `.harness-context${vendoredContext.contractRelativePath ? " (prd + contract)" : " (prd)"}`,
+    `.harness-context${vendoredContext.contractRelativePath ? " (prd + contract)" : " (prd)"}${vendoredContext.playwrightMcpPath ? " + playwright MCP" : ""}`,
   );
 
   const gitInit = await initWorkspaceGit(seedResult.workspacePath);
@@ -477,10 +484,112 @@ export async function validateWorkspace(options: CliOptions) {
   return runDeterministicValidation(options.workspacePath, loaded.spec);
 }
 
+/**
+ * Run Tier 3 semantic validation alone against an existing workspace
+ * (skips generator + deterministic gates). Re-vendors PRD/contract/Playwright MCP
+ * so older runs pick up current harness tooling.
+ */
+export async function validateSemanticWorkspace(options: CliOptions): Promise<SemanticValidationResult> {
+  if (!options.workspacePath) {
+    throw new Error('Expected --workspace <path> for validate-semantic command.');
+  }
+
+  const workspacePath = path.resolve(options.workspacePath);
+  await access(workspacePath);
+
+  const loaded = await loadTemplateSpec(options.specPath);
+  const { spec } = loaded;
+
+  if (!isValidatorEnabled(spec)) {
+    throw new Error(
+      "Semantic validator is not enabled in the spec (set validator.enabled: true or configure validator).",
+    );
+  }
+
+  if (!spec.contractPath) {
+    throw new Error("Semantic validation requires spec.contract to be configured.");
+  }
+
+  const vendored = await vendorHarnessContext(workspacePath, {
+    prdPath: spec.prdPath,
+    contractPath: spec.contractPath,
+  });
+  logPhase(
+    "Harness context refreshed for semantic validation",
+    `.harness-context + ${vendored.playwrightMcpPath ?? "no playwright MCP"}`,
+  );
+
+  const artifactDirs = await resolveSemanticArtifactDirs(workspacePath);
+  const attempt = await nextSemanticAttempt(artifactDirs.logsDirectory);
+
+  logPhase(`Semantic validation attempt ${attempt} started`, workspacePath);
+
+  const result = await runSemanticValidation({
+    workspacePath,
+    spec,
+    attempt,
+    logsDirectory: artifactDirs.logsDirectory,
+    promptsDirectory: artifactDirs.promptsDirectory,
+  });
+
+  const resultPath = path.join(artifactDirs.logsDirectory, `semantic-validation-attempt-${attempt}.json`);
+  await writeJsonFile(resultPath, result);
+
+  logPhase(
+    `Semantic validation ${result.passed ? "passed" : "failed"}`,
+    `${result.findings.length} finding(s), ${Math.round(result.durationMs / 1000)}s — ${resultPath}`,
+  );
+
+  return result;
+}
+
+async function resolveSemanticArtifactDirs(workspacePath: string): Promise<{
+  logsDirectory: string;
+  promptsDirectory: string;
+}> {
+  const parent = path.dirname(workspacePath);
+  const siblingLogs = path.join(parent, "logs");
+  const siblingPrompts = path.join(parent, "prompts");
+
+  // Typical harness layout: runs/<id>/workspace with sibling logs/ and prompts/
+  if (path.basename(workspacePath) === "workspace") {
+    try {
+      await access(siblingLogs);
+      await mkdir(siblingPrompts, { recursive: true });
+      return { logsDirectory: siblingLogs, promptsDirectory: siblingPrompts };
+    } catch {
+      // fall through
+    }
+  }
+
+  const logsDirectory = path.join(workspacePath, ".harness-semantic", "logs");
+  const promptsDirectory = path.join(workspacePath, ".harness-semantic", "prompts");
+  await mkdir(logsDirectory, { recursive: true });
+  await mkdir(promptsDirectory, { recursive: true });
+  return { logsDirectory, promptsDirectory };
+}
+
+async function nextSemanticAttempt(logsDirectory: string): Promise<number> {
+  let maxAttempt = 0;
+  try {
+    const entries = await readdir(logsDirectory);
+    for (const entry of entries) {
+      const match = /^semantic-validation-attempt-(\d+)\.json$/.exec(entry);
+      if (match) {
+        maxAttempt = Math.max(maxAttempt, Number.parseInt(match[1], 10));
+      }
+    }
+  } catch {
+    // empty / missing
+  }
+  return maxAttempt + 1;
+}
+
 function logPhase(title: string, detail?: string): void {
   const suffix = detail ? ` — ${detail}` : "";
   console.log(`[hbar-harness] ${title}${suffix}`);
 }
+
 
 function truncate(value: string, maxLength = 1200): string {
   const trimmed = value.trim();

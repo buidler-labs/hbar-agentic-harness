@@ -1,13 +1,13 @@
-import { runHarness, validateWorkspace } from "./runner.js";
+import { runHarness, validateSemanticWorkspace, validateWorkspace } from "./runner.js";
 import type { CliOptions, HarnessCommand, ParsedCli } from "./types.js";
 
-const COMMANDS = new Set<HarnessCommand>(["run", "supervise", "validate"]);
+const COMMANDS = new Set<HarnessCommand>(["run", "supervise", "validate", "validate-semantic"]);
 
 export function parseCliArgs(argv: string[]): ParsedCli {
   const [rawCommand, specPath, ...rest] = argv;
 
   if (!rawCommand || !isHarnessCommand(rawCommand)) {
-    throw new Error(`Expected command "run", "validate", or "supervise".`);
+    throw new Error(`Expected command "run", "validate", "validate-semantic", or "supervise".`);
   }
 
   if (!specPath || specPath.startsWith("-")) {
@@ -26,12 +26,14 @@ export function printHelp(): void {
 Usage:
   hbar-harness run <spec> [--agent <name>] [--max-attempts <count>]
   hbar-harness validate <spec> --workspace <path>
+  hbar-harness validate-semantic <spec> --workspace <path>
   hbar-harness supervise <spec> [--agent <name>] [--max-attempts <count>] [--max-cycles <count>]
 
 Examples:
   hbar-harness run specs/hedera-demo-from-main.yaml
   hbar-harness run specs/hedera-demo-from-main.yaml --max-attempts 3
   hbar-harness validate specs/hedera-demo-from-main.yaml --workspace runs/<run-id>/workspace
+  hbar-harness validate-semantic specs/hedera-demo-from-main.yaml --workspace runs/<run-id>/workspace
   hbar-harness supervise specs/hedera-demo-from-main.yaml --max-cycles 20`);
 }
 
@@ -59,6 +61,26 @@ export async function runCli(parsed: ParsedCli): Promise<void> {
         .join("\n"),
     );
     if (!validation.passed) {
+      process.exitCode = 1;
+    }
+    return;
+  }
+
+  if (parsed.command === "validate-semantic") {
+    const result = await validateSemanticWorkspace(parsed.options);
+    console.log(
+      [
+        `Semantic validation finished`,
+        `passed=${result.passed}`,
+        `findings=${result.findings.length}`,
+        `durationMs=${result.durationMs}`,
+        result.verdict?.summary ? `summary=${result.verdict.summary}` : undefined,
+        ...result.findings.map(finding => `- ${finding.message}`),
+      ]
+        .filter((line): line is string => Boolean(line))
+        .join("\n"),
+    );
+    if (!result.passed) {
       process.exitCode = 1;
     }
     return;
