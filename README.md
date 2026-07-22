@@ -1,69 +1,93 @@
 # hbar-agentic-harness
 
-TypeScript CLI for **generating and validating [scaffold-hbar](https://github.com/buidler-labs/scaffold-hbar) templates** with an agentic loop: seed a workspace, run a generator agent, validate deterministically, and repair until pass or budget exhausted.
+TypeScript CLI that **generates and validates [scaffold-hbar](https://github.com/buidler-labs/scaffold-hbar) templates** from a product brief you supply.
 
-The harness is **generic** — you bring your own PRD, spec, and validators per template. Product docs and machine-specific paths stay local.
+The harness is **template-agnostic**. You bring a PRD, a YAML spec, and validators for *your* Hedera demo (HCS feed, tip jar, marketplace, etc.). The loop is always the same: seed → generate → validate → repair until pass or budget exhausted.
 
 ## What it does
 
 1. **Seeds** an isolated workspace from a pinned `scaffold-hbar` git ref
-2. **Vendors skills** into the workspace (optional)
-3. **Runs a generator agent** (Cursor CLI by default) to transform the workspace into a template
-4. **Audits** agent logs for oracle peeking (informational — does not fail the run)
-5. **Validates** output with file checks, static JSON assertions, secret scan, and yarn commands
-6. **Repairs** on failure with focused prompts, up to `maxAttempts`
-7. **Writes artifacts** under `runs/` for inspection and comparison
+2. **Vendors** optional skills and harness context into the workspace
+3. **Runs a generator agent** (Cursor CLI `agent` by default) against your PRD
+4. **Validates** in layers you enable in the spec (see below)
+5. **Repairs** on failure with focused prompts, up to `maxAttempts`
+6. **Audits** agent logs for oracle peeking (informational — does not fail the run)
+7. **Writes artifacts** under `runs/` for inspection
 
-**Pass condition:** deterministic validation passes. Oracle audit results are logged separately.
+**Pass condition:** every validation tier enabled in the spec must pass. Oracle audit never blocks a pass.
+
+## Validation tiers (opt-in via spec)
+
+| Tier | Spec fields | What it checks |
+|------|-------------|----------------|
+| **0–1 Deterministic** | `validators.static`, `validators.commands`, `requiredFiles`, `forbiddenFiles`, `secretScan` | Files, JSON/text assertions, secrets, yarn install/lint/build (or your commands) |
+| **2 Playwright gate** | `validators.playwright` | Dev server boots; configured routes return OK; optional console / forbidden-text checks |
+| **3 Semantic** | `contract` + `validator` | Read-only agent drives the live app and grades numbered acceptance assertions |
+
+Tier 0–1 is the minimum. Tier 2–3 are optional but recommended for UI demos.
 
 ## Prerequisites
 
-- **Node.js** >= 20
-- **git** (for workspace seeding)
-- **yarn** (validation runs yarn commands in the seeded workspace)
-- **Cursor CLI** (`agent` on your PATH) — configured in the spec's `generator` block
-- A local **scaffold-hbar** clone (or remote URL) for seeding
-- Your own **PRD** markdown file (see below)
+### Always
 
-## Quick start
+- **Node.js** >= 20
+- **git** (workspace seeding)
+- **yarn** (seeded workspaces are Yarn-based)
+- **Cursor CLI** (`agent` on your `PATH`, authenticated)
+- A **scaffold-hbar** clone or remote URL for `seed.repo`
+- Your own **PRD** markdown (not shipped in this repo — see [`docs/prds/README.md`](docs/prds/README.md))
 
 ```bash
-git clone git@github.com:web3buidlerz/hbar-agentic-harness.git
+git clone git@github.com:buidler-labs/hbar-agentic-harness.git
 cd hbar-agentic-harness
 npm install
 ```
 
-### 1. Add a PRD locally
+### If you enable Tier 2 (`validators.playwright`)
 
-PRDs are **not committed** to this repo. Create one under `docs/prds/`:
+- Chromium for the harness Playwright dependency:
 
 ```bash
-mkdir -p docs/prds
-# add docs/prds/my-template.md with product requirements
+npx playwright install chromium
 ```
 
-See [`docs/prds/README.md`](docs/prds/README.md) for details.
+### If you enable Tier 3 (`contract` + `validator`)
 
-### 2. Configure a spec
+- An **acceptance contract** JSON (numbered assertions the semantic agent grades)
+- Playwright MCP available to the Cursor agent (the harness merges MCP config into the workspace; keep a working Playwright MCP setup for headless runs)
+- Validator agent flags that allow MCP tool use in CI/headless contexts, typically:
+  - `--force`
+  - `--sandbox disabled`
+  - `--approve-mcps`
 
-Copy or edit a YAML spec in `specs/`. At minimum you need:
+Semantic infrastructure failures (MCP rejected, no browser) abort the repair loop instead of asking the generator to “fix” the app.
 
-| Field | Purpose |
-|-------|---------|
-| `prd` | Path to your local PRD markdown |
-| `seed.repo` / `seed.ref` | Git source for the workspace (e.g. scaffold-hbar `main`) |
-| `generator` | CLI command and args for the generator agent |
-| `validators.static` | JSON file with structural assertions |
-| `validators.commands` | JSON file with yarn commands to run |
-| `requiredFiles` / `forbiddenFiles` | Spec-level file checks |
+## What you must provide
 
-An example layout is in [`specs/hedera-demo-from-main.yaml`](specs/hedera-demo-from-main.yaml). **Update all paths** (`seed.repo`, `skills`, `prd`) for your machine before running.
+To run a new Hedera template benchmark, supply:
 
-Minimal spec skeleton:
+| Input | Required? | Notes |
+|-------|-----------|--------|
+| **PRD** (`prd`) | Yes | Local markdown under `docs/prds/` (gitignored except the folder README) |
+| **Spec YAML** | Yes | Paths, seed, generator, validators, constraints |
+| **Static validator JSON** | Yes | Structural / text / secret assertions for this template |
+| **Command validator JSON** | Yes | Yarn (or other) commands that must succeed without live secrets |
+| **scaffold-hbar seed** | Yes | Update `seed.repo` / `seed.ref` for your machine |
+| **Skills paths** (`skills`) | Optional | Absolute paths to `SKILL.md` files to vendor into the workspace |
+| **Playwright smoke YAML** | Tier 2 | `server.command` / `server.url` + routes to hit |
+| **Acceptance contract** | Tier 3 | Numbered assertions; source of truth for semantic pass/fail |
+| **Validator agent block** | Tier 3 | Separate from the generator; usually stricter MCP/sandbox flags |
+
+Machine-specific paths (`seed.repo`, `skills`, sometimes absolute tool paths) must be edited before you run.
+
+## Configure a spec
+
+Example layout (paths are yours to fill in):
 
 ```yaml
-name: my-template
+name: my-hedera-template
 prd: docs/prds/my-template.md
+# contract: contracts/my-template-acceptance.json   # Tier 3
 
 seed:
   repo: /path/to/scaffold-hbar   # or https://github.com/buidler-labs/scaffold-hbar
@@ -77,16 +101,30 @@ generator:
   command: agent
   args:
     - -p
+    - --trust
+    - --sandbox
+    - enabled
     - --workspace
     - "{workspace}"
+    - --force
     - --output-format
     - stream-json
     - --stream-partial-output
   timeoutMs: 3600000
 
+# validator:                        # Tier 3 — separate agent
+#   enabled: true
+#   provider: command
+#   command: agent
+#   args: [ -p, --trust, --force, --sandbox, disabled, --approve-mcps, ... ]
+
+# skills:
+#   - /path/to/some-skill/SKILL.md
+
 validators:
   static: validators/my-template-static.json
   commands: validators/my-template-yarn.json
+  # playwright: playwright/my-template-smoke.yaml   # Tier 2
 
 requiredFiles:
   - template.json
@@ -103,20 +141,22 @@ logging:
   notes: runs/harness-notes.md
 ```
 
-### 3. Run
+A checked-in example spec lives in [`specs/`](specs/) — use it as a reference for field shape, then point every path at **your** PRD, validators, and seed.
+
+## Run
 
 ```bash
 npm run harness -- run specs/my-template.yaml
 npm run harness -- run specs/my-template.yaml --max-attempts 3
 ```
 
-Re-run validation only on an existing workspace:
+Re-run deterministic (+ Playwright gate if configured) on an existing workspace:
 
 ```bash
 npm run harness -- validate specs/my-template.yaml --workspace runs/<run-id>/workspace
 ```
 
-Re-run semantic (Tier 3 / acceptance contract) validation only:
+Re-run semantic validation only (requires `contract` + `validator` in the spec):
 
 ```bash
 npm run harness -- validate-semantic specs/my-template.yaml --workspace runs/<run-id>/workspace
@@ -126,10 +166,11 @@ npm run harness -- validate-semantic specs/my-template.yaml --workspace runs/<ru
 
 ```
 ├── src/              # Harness implementation
-├── specs/            # YAML run configs (example spec included)
+├── specs/            # YAML run configs (examples)
 ├── validators/       # JSON static + command validators
+├── contracts/        # Acceptance contracts (Tier 3)
+├── playwright/       # Playwright gate smoke configs (Tier 2)
 ├── docs/prds/        # Local PRDs only (gitignored except README)
-├── playwright/       # Smoke config (not wired yet)
 └── runs/             # Run artifacts (gitignored)
 ```
 
@@ -140,8 +181,9 @@ Each run creates `runs/<timestamp>-<spec-name>/`:
 | Path | Contents |
 |------|----------|
 | `workspace/` | Seeded base + agent modifications |
-| `prompts/` | Generator and repair prompts |
-| `logs/` | Agent stream, activity, validation, oracle audit |
+| `prompts/` | Generator, repair, and validator prompts |
+| `logs/` | Agent streams, validation, Playwright gate, semantic results |
+| `cache/` | Cross-attempt caches (e.g. install fingerprint) |
 | `reports/report.json` | Final pass/fail, seed SHA, findings |
 | `status.json` | Live progress during long runs |
 
@@ -162,10 +204,11 @@ CLI commands: `run`, `validate`, `validate-semantic` (`supervise` is not impleme
 
 ## Design notes
 
-- **Deterministic validation is authoritative** — the agent does not declare success.
-- **Blind benchmarks** — no reference template is passed to the harness; compare outputs manually afterward.
-- **Oracle audit** — scans agent logs for access outside the run workspace; logged but does not block pass when validation succeeds.
-- **Yarn-only** — scaffold-hbar templates use Yarn workspaces; npm/pnpm are rejected via spec constraints.
+- **Validation is authoritative** — agents do not declare success; the harness does.
+- **Blind by default** — no reference finished template is passed in; compare outputs manually if you want.
+- **Oracle audit** — scans agent logs for access outside the run workspace; logged only.
+- **Yarn-only constraints** — typical for scaffold-hbar; encode package-manager rules in the spec.
+- **Repair stays in-workspace** — findings (including semantic assertion IDs when Tier 3 is on) feed the next generator prompt.
 
 ## License
 
