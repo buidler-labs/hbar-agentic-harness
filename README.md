@@ -143,6 +143,13 @@ logging:
 
 A checked-in example spec lives in [`specs/`](specs/) — use it as a reference for field shape, then point every path at **your** PRD, validators, and seed.
 
+### Adding a new template
+
+For a novel Hedera demo, copy the skeleton and follow the checklist:
+
+- Guide: [`docs/authoring-a-template.md`](docs/authoring-a-template.md)
+- Files: [`skeletons/new-template/`](skeletons/new-template/)
+
 ## Run
 
 ```bash
@@ -170,7 +177,10 @@ npm run harness -- validate-semantic specs/my-template.yaml --workspace runs/<ru
 ├── validators/       # JSON static + command validators
 ├── contracts/        # Acceptance contracts (Tier 3)
 ├── playwright/       # Playwright gate smoke configs (Tier 2)
-├── docs/prds/        # Local PRDs only (gitignored except README)
+├── skeletons/        # Copyable stubs for a new template benchmark
+├── docs/
+│   ├── authoring-a-template.md
+│   └── prds/         # Local PRDs only (gitignored except README)
 └── runs/             # Run artifacts (gitignored)
 ```
 

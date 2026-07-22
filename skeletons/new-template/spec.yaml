@@ -1,0 +1,106 @@
+# Skeleton YAML for a new harness benchmark.
+# Copy to specs/<name>.yaml and replace every REPLACE_ME / my-template path.
+
+name: my-template
+description: REPLACE_ME — one-line description of this Hedera demo benchmark.
+
+prd: docs/prds/my-template.md
+contract: contracts/my-template-acceptance.json
+
+seed:
+  repo: REPLACE_ME/path/to/scaffold-hbar
+  ref: main
+  preflight:
+    commands:
+      - name: seed-install
+        command: yarn install
+        timeoutMs: 300000
+  isolation:
+    neverModifySeedRepo: true
+
+generator:
+  provider: command
+  command: agent
+  args:
+    - -p
+    - --trust
+    - --sandbox
+    - enabled
+    - --workspace
+    - "{workspace}"
+    - --force
+    - --output-format
+    - stream-json
+    - --stream-partial-output
+  timeoutMs: 3600000
+
+# Tier 3 — required together with `contract` above for semantic validation
+validator:
+  enabled: true
+  provider: command
+  command: agent
+  args:
+    - -p
+    - --trust
+    - --force
+    - --sandbox
+    - disabled
+    - --approve-mcps
+    - --workspace
+    - "{workspace}"
+    - --output-format
+    - stream-json
+    - --stream-partial-output
+  timeoutMs: 600000
+
+# Optional — absolute paths to SKILL.md files to vendor into the workspace
+# skills:
+#   - REPLACE_ME/path/to/skill/SKILL.md
+
+constraints:
+  packageManager: yarn@3.2.3
+  workspaces:
+    - packages/nextjs
+  # forbiddenWorkspaces:
+  #   - packages/hardhat
+  #   - packages/foundry
+  forbiddenCommands:
+    - npm install
+    - npm run
+    - pnpm install
+    - pnpm run
+
+templateMetadata:
+  name: my-template
+  frontend: nextjs-app
+  solidityFramework: none
+
+validators:
+  static: validators/my-template-static.json
+  commands: validators/my-template-yarn.json
+  playwright: playwright/my-template-smoke.yaml
+
+requiredFiles:
+  - template.json
+  - README.md
+  - AGENTS.md
+  - package.json
+  - packages/nextjs/package.json
+
+forbiddenFiles:
+  - .env
+  - packages/nextjs/.env
+
+secretScan:
+  failOnFiles:
+    - .env
+    - packages/nextjs/.env
+  patterns:
+    - name: private-key-assignment
+      pattern: "(PRIVATE_KEY|OPERATOR_KEY|HEDERA_OPERATOR_PRIVATE_KEY)\\s*=\\s*(0x)?[0-9a-fA-F]{32,}"
+
+maxAttempts: 3
+
+logging:
+  jsonl: runs/harness.log.jsonl
+  notes: runs/harness-notes.md
