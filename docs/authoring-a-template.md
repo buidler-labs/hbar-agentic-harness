@@ -94,16 +94,51 @@ The harness Playwright gate currently enforces: server up, route HTTP success, c
   - `howToVerify` — concrete browser steps
   - `severity`: `critical` | `major` | `minor`
   - `walletRequired` / `verifiableWithoutCredentials`
+  - `executableWithTestSigner` when Tier 3.5 should complete a real tx
 - [ ] Prefer few **critical** assertions (app loads, core journey possible)
-- [ ] Wallet flows: assert affordances and messaging, not successful on-chain txs
+- [ ] Wallet flows without a test signer: assert affordances and messaging; with `chainValidation` + `executableWithTestSigner`, require end-to-end tx + mirror evidence
 - [ ] This file — not the PRD — is what the semantic agent grades
 
-### 7. Host prerequisites
+### 7. On-chain validation / Tier 3.5 (`chainValidation` in the spec) — optional
+
+When enabled, the harness provisions an **ephemeral funded ECDSA testnet account** per run, injects it as the scaffold burner wallet, and lets the semantic validator complete `executableWithTestSigner` assertions. Effects are verified against the **mirror node** (not just UI toasts).
+
+```yaml
+chainValidation:
+  enabled: true
+  network: testnet            # mainnet is rejected by the loader
+  operator:
+    accountIdEnv: HEDERA_OPERATOR_ID
+    privateKeyEnv: HEDERA_OPERATOR_KEY
+  fundingHbar: 10
+  sweepBack: true
+  expose:
+    browserLocalStorageKey: burnerWallet.pk
+    envVars: []               # e.g. [DEPLOYER_PRIVATE_KEY] for Solidity templates
+  # deploy:                   # optional pre-validation commands (contract templates)
+  #   commands:
+  #     - name: deploy-testnet
+  #       command: yarn hardhat:deploy --network hederaTestnet
+  #       timeoutMs: 300000
+```
+
+Checklist:
+
+- [ ] Host has a funded **ECDSA** testnet operator (not ED25519 — no EVM alias)
+- [ ] `HEDERA_OPERATOR_ID` / `HEDERA_OPERATOR_KEY` exported in the shell (never written into the workspace)
+- [ ] Contract assertions that need a real tx set `executableWithTestSigner: true`
+- [ ] Template keeps the burner connector enabled (`enableBurnerWallet: true`, burner in `wagmiConnectors`) so headless signing works
+- [ ] For Solidity templates: map `expose.envVars` + `deploy.commands` so contracts are deployed before the app is graded; add a static-validator text needle on `wagmiConnectors.tsx` / `scaffold.config.ts` if you want to enforce burner support
+
+Lifecycle: create account once per run directory → reuse across repair/continue attempts → best-effort `AccountDeleteTransaction` sweep back to the operator at run end (`sweepBack: true`). `validate-semantic` reuses the signer and does not sweep.
+
+### 8. Host prerequisites
 
 - [ ] `npm install` in the harness repo
 - [ ] `agent` on `PATH` and authenticated
 - [ ] Tier 2: `npx playwright install chromium`
 - [ ] Tier 3: Playwright MCP usable headless (harness vendors MCP into the workspace)
+- [ ] Tier 3.5 (if `chainValidation.enabled`): funded ECDSA testnet operator env vars
 
 ## Smoke before a full run
 

@@ -478,7 +478,17 @@ function formatSkillSummaries(skills: VendoredSkill[]): string {
     .join("\n\n");
 }
 
-export function buildValidatorPrompt(contractJson: string, serverUrl: string): string {
+export function buildValidatorPrompt(
+  contractJson: string,
+  serverUrl: string,
+  chainSigner?: {
+    accountId: string;
+    privateKeyHex: string;
+    evmAddress: string;
+    network: "testnet";
+  },
+  browserLocalStorageKey = "burnerWallet.pk",
+): string {
   const outputSchema = {
     passed: true,
     summary: "Brief overall summary of the evaluation.",
@@ -494,6 +504,15 @@ export function buildValidatorPrompt(contractJson: string, serverUrl: string): s
     ],
   };
 
+  const hasTestSigner = Boolean(chainSigner);
+  const walletRule = hasTestSigner
+    ? [
+        "- Assertions flagged executableWithTestSigner=true MUST be executed end-to-end with the harness test signer and verified on the Hedera testnet mirror node.",
+        "- Other walletRequired assertions (without executableWithTestSigner) stay affordance-only: verify controls and no-wallet handling; do not require a completed on-chain tx.",
+        "- Never use the test signer against mainnet.",
+      ].join("\n")
+    : "- For walletRequired assertions, do NOT complete on-chain transactions; verify affordances and no-wallet handling only.";
+
   return [
     "You are an adversarial QA evaluator for a scaffold-hbar template harness.",
     "",
@@ -507,6 +526,42 @@ export function buildValidatorPrompt(contractJson: string, serverUrl: string): s
     "## Acceptance Contract",
     contractJson.trim(),
     "",
+    ...(hasTestSigner && chainSigner
+      ? [
+          "## Test Signer (funded disposable testnet account)",
+          "The harness provisioned an ephemeral ECDSA testnet account for this evaluation.",
+          "It covers both native Hedera SDK signing and EVM (wagmi/burner) signing.",
+          "",
+          `- Hedera account ID: ${chainSigner.accountId}`,
+          `- EVM address: ${chainSigner.evmAddress}`,
+          `- Private key (hex): ${chainSigner.privateKeyHex}`,
+          `- Network: ${chainSigner.network}`,
+          `- Browser localStorage key: ${browserLocalStorageKey}`,
+          "",
+          "### Wallet connection recipe",
+          "1. Navigate to the app.",
+          `2. Use Playwright MCP browser_evaluate (or equivalent) to run: localStorage.setItem("${browserLocalStorageKey}", "${chainSigner.privateKeyHex}");`,
+          "3. Reload the page.",
+          "4. Click the Connect Wallet control in the header/nav.",
+          '5. In the RainbowKit modal, open the "Development" group and choose "Burner Wallet".',
+          "6. Confirm the header shows a connected account (may show EVM address or Hedera account ID).",
+          "7. If the app resolves a Hedera account ID from the EVM alias via mirror node, wait/retry a few seconds — newly created accounts can lag briefly.",
+          "",
+          "### On-chain verification recipe",
+          "After executing an executableWithTestSigner flow:",
+          "- Verify effects via the Hedera testnet mirror node REST API (keyless ground truth), not only UI toasts.",
+          "- Base URL: https://testnet.mirrornode.hedera.com",
+          "- Useful endpoints:",
+          "  - GET /api/v1/topics/{topicId}",
+          "  - GET /api/v1/topics/{topicId}/messages",
+          "  - GET /api/v1/tokens/{tokenId}",
+          "  - GET /api/v1/contracts/{address}/results",
+          "  - GET /api/v1/accounts/{accountIdOrEvm}",
+          "- Use browser_navigate to the JSON URL or a shell curl from the workspace. Poll up to ~30s for mirror lag.",
+          "- Cite the mirror response (status, relevant fields) in issue evidence when an assertion fails; include it in your reasoning for passes.",
+          "",
+        ]
+      : []),
     "## Output Requirements",
     "Output ONLY a single JSON object matching this schema (no prose outside JSON):",
     "```json",
@@ -517,7 +572,7 @@ export function buildValidatorPrompt(contractJson: string, serverUrl: string): s
     "- Set passed=true only when ALL contract assertions are positively verified.",
     "- Every failed assertion must appear in issues[] with contractAssertion matching the assertion id (e.g. C1).",
     "- severity must be one of: critical, major, minor (per the contract).",
-    "- For walletRequired assertions, do NOT complete on-chain transactions; verify affordances and no-wallet handling only.",
+    walletRule,
     "- Cite route, UI elements, and console observations in evidence for every issue.",
     "- If you cannot positively verify an assertion, mark it failed with evidence explaining the uncertainty.",
   ].join("\n");

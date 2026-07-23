@@ -99,6 +99,27 @@ secretScan:
     - name: private-key-assignment
       pattern: "(PRIVATE_KEY|OPERATOR_KEY|HEDERA_OPERATOR_PRIVATE_KEY)\\s*=\\s*(0x)?[0-9a-fA-F]{32,}"
 
+# Optional Tier 3.5 — on-chain validation (ephemeral ECDSA test signer + mirror node).
+# Requires host env vars for a funded testnet operator (ECDSA, never ED25519).
+# chainValidation:
+#   enabled: true
+#   network: testnet
+#   operator:
+#     accountIdEnv: HEDERA_OPERATOR_ID
+#     privateKeyEnv: HEDERA_OPERATOR_KEY
+#   fundingHbar: 10
+#   sweepBack: true
+#   expose:
+#     browserLocalStorageKey: burnerWallet.pk
+#     # For Solidity templates: inject the same key into deploy commands
+#     envVars:
+#       - DEPLOYER_PRIVATE_KEY
+#   deploy:
+#     commands:
+#       - name: deploy-testnet
+#         command: yarn hardhat:deploy --network hederaTestnet
+#         timeoutMs: 300000
+
 maxAttempts: 3
 
 logging:

@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseYaml } from "yaml";
-import type { SecretScanConfig, TemplateSpec } from "./types.js";
+import type { ChainValidationConfig, SecretScanConfig, TemplateSpec } from "./types.js";
 
 export async function loadTemplateSpec(specPath: string): Promise<LoadedTemplateSpec> {
   const absoluteSpecPath = path.resolve(specPath);
@@ -34,6 +34,7 @@ export async function loadTemplateSpec(specPath: string): Promise<LoadedTemplate
     requiredFiles: readStringArray(parsed, "requiredFiles"),
     forbiddenFiles: readStringArray(parsed, "forbiddenFiles"),
     secretScan: readSecretScan(parsed),
+    chainValidation: readChainValidation(parsed),
     maxAttempts: readOptionalNumber(parsed, "maxAttempts") ?? 3,
     logging: {
       jsonlPath: resolveProjectPath(projectRoot, readString(readObject(parsed, "logging"), "jsonl")),
@@ -256,5 +257,82 @@ function readSecretScan(parsed: Record<string, unknown>): SecretScanConfig | und
     patterns: Array.isArray(patterns)
       ? (patterns as Array<{ name: string; pattern: string; allowIn?: string[] }>)
       : [],
+  };
+}
+
+function readChainValidation(parsed: Record<string, unknown>): ChainValidationConfig | undefined {
+  const chainValidation = parsed.chainValidation;
+  if (chainValidation === undefined) return undefined;
+  if (!chainValidation || typeof chainValidation !== "object" || Array.isArray(chainValidation)) {
+    throw new Error('Expected object "chainValidation" in template spec.');
+  }
+
+  const record = chainValidation as Record<string, unknown>;
+  if (record.enabled === false) {
+    return undefined;
+  }
+
+  const network = readString(record, "network");
+  if (network !== "testnet") {
+    throw new Error(
+      `chainValidation.network must be "testnet" (got ${JSON.stringify(network)}). Mainnet is not allowed.`,
+    );
+  }
+
+  const operator = readObject(record, "operator");
+  const exposeRecord =
+    record.expose && typeof record.expose === "object" && !Array.isArray(record.expose)
+      ? (record.expose as Record<string, unknown>)
+      : {};
+
+  const deployRecord =
+    record.deploy && typeof record.deploy === "object" && !Array.isArray(record.deploy)
+      ? (record.deploy as Record<string, unknown>)
+      : undefined;
+
+  let deploy: ChainValidationConfig["deploy"];
+  if (deployRecord) {
+    const commandsRaw = deployRecord.commands;
+    if (!Array.isArray(commandsRaw)) {
+      throw new Error('Expected array "chainValidation.deploy.commands" in template spec.');
+    }
+    deploy = {
+      commands: commandsRaw.map((item, index) => {
+        if (!item || typeof item !== "object" || Array.isArray(item)) {
+          throw new Error(`Expected object at chainValidation.deploy.commands[${index}].`);
+        }
+        const cmd = item as Record<string, unknown>;
+        return {
+          name: readString(cmd, "name"),
+          command: readString(cmd, "command"),
+          timeoutMs: readOptionalNumber(cmd, "timeoutMs"),
+        };
+      }),
+    };
+  }
+
+  const fundingHbar = readOptionalNumber(record, "fundingHbar") ?? 10;
+  if (!Number.isFinite(fundingHbar) || fundingHbar <= 0) {
+    throw new Error('Expected positive number "chainValidation.fundingHbar".');
+  }
+
+  return {
+    enabled: record.enabled !== false,
+    network: "testnet",
+    operator: {
+      accountIdEnv: readString(operator, "accountIdEnv"),
+      privateKeyEnv: readString(operator, "privateKeyEnv"),
+    },
+    fundingHbar,
+    sweepBack: record.sweepBack !== false,
+    expose: {
+      browserLocalStorageKey:
+        typeof exposeRecord.browserLocalStorageKey === "string" &&
+        exposeRecord.browserLocalStorageKey.trim()
+          ? exposeRecord.browserLocalStorageKey.trim()
+          : "burnerWallet.pk",
+      envVars: readOptionalStringArray(exposeRecord, "envVars") ?? [],
+    },
+    deploy,
   };
 }

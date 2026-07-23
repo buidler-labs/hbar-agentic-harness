@@ -17,6 +17,7 @@ import { loadTemplateSpec } from "./specLoader.js";
 import type { AgentProgress } from "./agentStreamLogger.js";
 import type {
   BlindIntegrityResult,
+  ChainSigner,
   CliOptions,
   RunReport,
   SemanticValidationResult,
@@ -28,7 +29,14 @@ import { auditOracleAccess } from "./oracleAudit.js";
 import { vendorHarnessContext } from "./contextVendor.js";
 import { vendorSkills } from "./skillVendor.js";
 import { commitWorkspaceAttempt, commitWorkspaceBaseline, ensureWorkspaceGit, initWorkspaceGit } from "./workspaceGit.js";
+import { executeCommand } from "./command.js";
 import { runDeterministicValidation } from "./validation/index.js";
+import {
+  assertChainValidationOperatorEnv,
+  buildDeployEnv,
+  provisionChainSigner,
+  sweepChainSigner,
+} from "./validation/chainSigner.js";
 import { isValidatorEnabled, runSemanticValidation } from "./semanticValidator.js";
 import { createDevServerSession, loadDevServerConfig } from "./validation/devServer.js";
 import { runPlaywrightGate } from "./validation/playwrightGate.js";
@@ -48,6 +56,12 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
   const generator = new CommandAgentProvider(spec.generator);
   const cycle = isContinue ? await nextCycleNumber(layout.reportsDirectory) : undefined;
   const startingAttempt = isContinue ? (await lastAttemptNumber(layout.logsDirectory)) + 1 : 1;
+  let chainSigner: ChainSigner | undefined;
+
+  // Fail before seeding / generator if Tier 3.5 operator credentials are missing.
+  if (spec.chainValidation?.enabled) {
+    assertChainValidationOperatorEnv(spec.chainValidation);
+  }
 
   logPhase(isContinue ? "Run continued" : "Run started", layout.runDirectory);
   await writeStatusFile(layout.runDirectory, {
@@ -199,6 +213,34 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
     logPhase("Workspace git initialized", gitInit.commitSha.slice(0, 8));
   }
 
+  if (spec.chainValidation?.enabled) {
+    const provisioned = await provisionChainSigner(spec.chainValidation, layout.runDirectory);
+    chainSigner = provisioned.signer;
+    await appendHarnessLog(layout.jsonlLogPath, {
+      type: "chain_signer_provisioned",
+      timestamp: new Date().toISOString(),
+      accountId: chainSigner.accountId,
+      evmAddress: chainSigner.evmAddress,
+      network: chainSigner.network,
+      reused: provisioned.reused,
+    });
+    await appendHarnessNote(
+      layout.notesLogPath,
+      "Chain signer provisioned",
+      [
+        `accountId=${chainSigner.accountId}`,
+        `evmAddress=${chainSigner.evmAddress}`,
+        `reused=${provisioned.reused}`,
+        `fundingHbar=${spec.chainValidation.fundingHbar}`,
+      ].join("\n"),
+    );
+    logPhase(
+      provisioned.reused ? "Chain signer reused" : "Chain signer provisioned",
+      `${chainSigner.accountId} (${chainSigner.evmAddress})`,
+    );
+  }
+
+  try {
   let attempts = isContinue ? await lastAttemptNumber(layout.logsDirectory) : 0;
   let attemptsThisCycle = 0;
   let validation: ValidationResult = {
@@ -384,6 +426,7 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
         attempts,
         agentFinding,
         jsonlLogPath: layout.jsonlLogPath,
+        chainSigner,
       });
     } else {
       validation = await runAttemptValidation({
@@ -394,6 +437,7 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
         logsDirectory: layout.logsDirectory,
         promptsDirectory: layout.promptsDirectory,
         jsonlLogPath: layout.jsonlLogPath,
+        chainSigner,
       });
     }
 
@@ -586,6 +630,23 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
   }
 
   return report;
+  } finally {
+    if (chainSigner && spec.chainValidation?.enabled) {
+      const sweep = await sweepChainSigner(chainSigner, spec.chainValidation);
+      await appendHarnessLog(layout.jsonlLogPath, {
+        type: "chain_signer_swept",
+        timestamp: new Date().toISOString(),
+        accountId: chainSigner.accountId,
+        success: sweep.success,
+        error: sweep.error,
+      });
+      if (sweep.success) {
+        logPhase("Chain signer swept", chainSigner.accountId);
+      } else {
+        logPhase("Chain signer sweep failed (best-effort)", sweep.error);
+      }
+    }
+  }
 }
 
 export async function validateWorkspace(options: CliOptions) {
@@ -623,6 +684,10 @@ export async function validateSemanticWorkspace(options: CliOptions): Promise<Se
     throw new Error("Semantic validation requires spec.contract to be configured.");
   }
 
+  if (spec.chainValidation?.enabled) {
+    assertChainValidationOperatorEnv(spec.chainValidation);
+  }
+
   const vendored = await vendorHarnessContext(workspacePath, {
     prdPath: spec.prdPath,
     contractPath: spec.contractPath,
@@ -635,6 +700,17 @@ export async function validateSemanticWorkspace(options: CliOptions): Promise<Se
   const artifactDirs = await resolveSemanticArtifactDirs(workspacePath);
   const attempt = await nextSemanticAttempt(artifactDirs.logsDirectory);
 
+  let chainSigner: ChainSigner | undefined;
+  if (spec.chainValidation?.enabled) {
+    const runDirectory = resolveRunDirectoryFromWorkspace(workspacePath);
+    const provisioned = await provisionChainSigner(spec.chainValidation, runDirectory);
+    chainSigner = provisioned.signer;
+    logPhase(
+      provisioned.reused ? "Chain signer reused" : "Chain signer provisioned",
+      `${chainSigner.accountId} (${chainSigner.evmAddress})`,
+    );
+  }
+
   logPhase(`Semantic validation attempt ${attempt} started`, workspacePath);
 
   const result = await runSemanticValidation({
@@ -643,6 +719,7 @@ export async function validateSemanticWorkspace(options: CliOptions): Promise<Se
     attempt,
     logsDirectory: artifactDirs.logsDirectory,
     promptsDirectory: artifactDirs.promptsDirectory,
+    chainSigner,
   });
 
   const resultPath = path.join(artifactDirs.logsDirectory, `semantic-validation-attempt-${attempt}.json`);
@@ -665,6 +742,7 @@ async function runAttemptValidation(input: {
   promptsDirectory?: string;
   jsonlLogPath?: string;
   agentFinding?: ValidationFinding;
+  chainSigner?: ChainSigner;
 }): Promise<ValidationResult> {
   const installCachePath = path.join(input.runDirectory, "cache", "install-fingerprint.txt");
   const useSharedDevServer =
@@ -691,6 +769,23 @@ async function runAttemptValidation(input: {
   const tier01Passed = validation.findings.filter(finding => finding.category !== "agent").length === 0;
   if (!useSharedDevServer || !tier01Passed || input.agentFinding) {
     return validation;
+  }
+
+  // Optional on-chain deploy hook (Solidity templates) before starting the app.
+  if (input.chainSigner && input.spec.chainValidation?.deploy?.commands.length) {
+    const deployFindings = await runChainDeployCommands(
+      input.workspacePath,
+      input.spec,
+      input.chainSigner,
+    );
+    if (deployFindings.length > 0) {
+      validation = {
+        ...validation,
+        passed: false,
+        findings: [...validation.findings, ...deployFindings],
+      };
+      return validation;
+    }
   }
 
   const playwrightPath = input.spec.validators.playwrightPath!;
@@ -728,6 +823,7 @@ async function runAttemptValidation(input: {
       logsDirectory: input.logsDirectory,
       promptsDirectory: input.promptsDirectory,
       devServer: devSession,
+      chainSigner: input.chainSigner,
     });
 
     const semanticLogPath = path.join(
@@ -767,6 +863,47 @@ async function runAttemptValidation(input: {
   }
 
   return validation;
+}
+
+async function runChainDeployCommands(
+  workspacePath: string,
+  spec: TemplateSpec,
+  chainSigner: ChainSigner,
+): Promise<ValidationFinding[]> {
+  const commands = spec.chainValidation?.deploy?.commands ?? [];
+  if (commands.length === 0) return [];
+
+  const env = buildDeployEnv(chainSigner, spec.chainValidation?.expose.envVars ?? []);
+  const findings: ValidationFinding[] = [];
+
+  for (const commandConfig of commands) {
+    logPhase(`Chain deploy: ${commandConfig.name}`, commandConfig.command);
+    const result = await executeCommand({
+      command: commandConfig.command,
+      cwd: workspacePath,
+      env,
+      timeoutMs: commandConfig.timeoutMs,
+      shell: true,
+    });
+    if (result.exitCode !== 0) {
+      findings.push({
+        id: `chain-deploy:${commandConfig.name}`,
+        category: "commands",
+        message: `Chain deploy command failed: ${commandConfig.name}`,
+        details: truncate(result.stderr || result.stdout),
+      });
+    }
+  }
+
+  return findings;
+}
+
+function resolveRunDirectoryFromWorkspace(workspacePath: string): string {
+  const resolved = path.resolve(workspacePath);
+  if (path.basename(resolved) === "workspace") {
+    return path.dirname(resolved);
+  }
+  return resolved;
 }
 
 async function resolveSemanticArtifactDirs(workspacePath: string): Promise<{

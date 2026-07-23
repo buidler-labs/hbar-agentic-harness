@@ -9,8 +9,9 @@
     "posture": "adversarial",
     "failOnUncertainty": "If an assertion cannot be positively verified from the running app, mark it FAILED, not passed. Absence of evidence is a failure.",
     "credentials": "The app must load and be browsable without any .env file, private keys, or funded testnet account. Missing credentials must not excuse a broken read path.",
-    "walletGatedFlows": "For assertions marked walletRequired=true, do NOT complete an on-chain transaction. Verify the control/affordance is present and communicates the wallet/testnet requirement. A crash or blank screen on that path is a failure.",
-    "evidence": "Every verdict issue must cite what was observed (route visited, element found/absent, console output).",
+    "walletGatedFlows": "When the harness provides a Test Signer: assertions flagged executableWithTestSigner=true MUST be executed end-to-end and verified via the testnet mirror node. Other walletRequired assertions stay affordance-only. When no Test Signer is provided, treat all walletRequired as affordance-only.",
+    "onChainVerification": "For executableWithTestSigner assertions, confirm effects via https://testnet.mirrornode.hedera.com (topics/messages/tokens/contracts as relevant). Poll up to ~30s for mirror lag.",
+    "evidence": "Every verdict issue must cite what was observed (route visited, element found/absent, console output, mirror responses for on-chain flows).",
     "severityMeaning": {
       "critical": "Route/app is broken or a core journey is impossible; run cannot pass.",
       "major": "A required PRD capability is missing or non-functional on the read/affordance level.",
@@ -46,7 +47,18 @@
       "walletRequired": true,
       "verifiableWithoutCredentials": true,
       "statement": "REPLACE_ME — the wallet-gated control is visible and explains that a wallet/testnet is required; no crash when visiting the route without connecting.",
-      "howToVerify": "Navigate to the route without connecting a wallet. Confirm the affordance exists and messaging is clear; do not attempt an on-chain transaction."
+      "howToVerify": "Navigate to the route without connecting a wallet. Confirm the affordance exists and messaging is clear; do not attempt an on-chain transaction unless a Test Signer is provided and this assertion is marked executableWithTestSigner."
+    },
+    {
+      "id": "C4",
+      "journey": "On-chain with test signer",
+      "route": "/REPLACE_ME",
+      "severity": "major",
+      "walletRequired": true,
+      "executableWithTestSigner": true,
+      "verifiableWithoutCredentials": false,
+      "statement": "REPLACE_ME — with the harness test signer, complete the primary write flow (e.g. submit message / call contract) and verify the effect on the testnet mirror node.",
+      "howToVerify": "Inject burnerWallet.pk, connect Burner Wallet, execute the write flow, then confirm via mirror node REST (topics/messages/tokens/contracts as appropriate). Cite mirror evidence."
     }
   ]
 }

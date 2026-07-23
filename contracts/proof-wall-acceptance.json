@@ -10,8 +10,9 @@
     "posture": "adversarial",
     "failOnUncertainty": "If an assertion cannot be positively verified from the running app, mark it FAILED, not passed. Absence of evidence is a failure.",
     "credentials": "The app must load, render, and be browsable without any .env file, private keys, operator keys, or funded testnet account. Never treat missing credentials as a passing excuse for a broken read path.",
-    "walletGatedFlows": "For assertions marked walletRequired=true, do NOT attempt to complete an on-chain transaction. Verify instead that the relevant control/affordance is present, reachable, and communicates the wallet/testnet requirement clearly. A crash, blank screen, or unhandled error on the wallet path is a failure.",
-    "evidence": "Every verdict issue must cite what was observed (route visited, element found/absent, console output).",
+    "walletGatedFlows": "When the harness provides a Test Signer in the validator prompt: assertions flagged executableWithTestSigner=true MUST be executed end-to-end (connect burner wallet, complete the flow, verify on-chain via mirror node). Other walletRequired assertions without that flag remain affordance-only — verify the control is present and communicates the wallet/testnet requirement; do not require a completed tx. When no Test Signer is provided, treat all walletRequired assertions as affordance-only. A crash, blank screen, or unhandled error on the wallet path is always a failure.",
+    "onChainVerification": "For executableWithTestSigner assertions, UI success toasts alone are insufficient. Confirm effects via the Hedera testnet mirror node REST API (https://testnet.mirrornode.hedera.com): topics, topic messages, tokens, and/or contract results as relevant. Poll up to ~30s for mirror lag. Cite mirror evidence in the verdict.",
+    "evidence": "Every verdict issue must cite what was observed (route visited, element found/absent, console output, and mirror node responses for executed on-chain flows).",
     "severityMeaning": {
       "critical": "Route/app is broken or a core journey is impossible; run cannot pass.",
       "major": "A required PRD capability is missing or non-functional on the read/affordance level.",
@@ -208,6 +209,39 @@
       "verifiableWithoutCredentials": true,
       "statement": "The demo surfaces no Solidity/contract-deploy or local-chain tooling flows (no Hardhat/Foundry/Docker deploy UI or instructions).",
       "howToVerify": "Across the routes and any visible setup guidance in the UI, confirm there are no contract-deploy, Hardhat, Foundry, or local EVM deploy steps presented to the user."
+    },
+    {
+      "id": "C20",
+      "journey": "On-chain with test signer",
+      "route": "*",
+      "severity": "major",
+      "walletRequired": true,
+      "executableWithTestSigner": true,
+      "verifiableWithoutCredentials": false,
+      "statement": "Connecting the burner wallet with the harness test signer key succeeds and the app shell shows a connected account.",
+      "howToVerify": "Inject the test signer private key into localStorage (burnerWallet.pk), reload, open Connect Wallet, choose Burner Wallet from the Development group. Confirm the header/nav shows a connected account (EVM address or Hedera account ID). Retry briefly if account-id resolution lags on the mirror node."
+    },
+    {
+      "id": "C21",
+      "journey": "On-chain with test signer",
+      "route": "/admin",
+      "severity": "major",
+      "walletRequired": true,
+      "executableWithTestSigner": true,
+      "verifiableWithoutCredentials": false,
+      "statement": "Creating an HCS topic with the test signer completes and surfaces the new topic ID; the topic exists on the testnet mirror node.",
+      "howToVerify": "With the burner wallet connected, use the admin create-topic control. Confirm the UI shows a new topic ID (0.0.x). Verify via GET https://testnet.mirrornode.hedera.com/api/v1/topics/{topicId} (or that a create transaction for the test account appears). Poll up to ~30s for mirror lag."
+    },
+    {
+      "id": "C22",
+      "journey": "On-chain with test signer",
+      "route": "/",
+      "severity": "major",
+      "walletRequired": true,
+      "executableWithTestSigner": true,
+      "verifiableWithoutCredentials": false,
+      "statement": "Submitting a proof with the test signer completes; the message appears in the topic's mirror node messages and on the Proof Wall UI.",
+      "howToVerify": "With burner wallet connected and a topic configured (from C21 or an existing topic), submit a distinctive proof payload. Expect success feedback in the UI. Confirm GET https://testnet.mirrornode.hedera.com/api/v1/topics/{topicId}/messages contains the payload (payer should be the test account). Confirm the proof appears on the wall feed. Poll up to ~30s for mirror lag."
     }
   ]
 }

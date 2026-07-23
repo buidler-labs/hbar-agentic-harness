@@ -23,8 +23,9 @@ The harness is **template-agnostic**. You bring a PRD, a YAML spec, and validato
 | **0–1 Deterministic** | `validators.static`, `validators.commands`, `requiredFiles`, `forbiddenFiles`, `secretScan` | Files, JSON/text assertions, secrets, yarn install/lint/build (or your commands) |
 | **2 Playwright gate** | `validators.playwright` | Dev server boots; configured routes return OK; optional console / forbidden-text checks |
 | **3 Semantic** | `contract` + `validator` | Read-only agent drives the live app and grades numbered acceptance assertions |
+| **3.5 On-chain** | `chainValidation` (+ Tier 3) | Ephemeral funded ECDSA test signer injected as burner wallet; `executableWithTestSigner` assertions complete real txs and verify via mirror node |
 
-Tier 0–1 is the minimum. Tier 2–3 are optional but recommended for UI demos.
+Tier 0–1 is the minimum. Tier 2–3 are optional but recommended for UI demos. Tier 3.5 needs a funded testnet operator on the host.
 
 ## Prerequisites
 
@@ -61,6 +62,18 @@ npx playwright install chromium
   - `--approve-mcps`
 
 Semantic infrastructure failures (MCP rejected, no browser) abort the repair loop instead of asking the generator to “fix” the app.
+
+### If you enable Tier 3.5 (`chainValidation`)
+
+- A **funded Hedera testnet account created with an ECDSA key** (not ED25519 — ECDSA is required for the EVM address alias used by the burner wallet)
+- Export operator credentials in the shell that runs the harness (never write them into a workspace):
+
+```bash
+export HEDERA_OPERATOR_ID=0.0.xxxx
+export HEDERA_OPERATOR_KEY=0x...   # ECDSA private key hex
+```
+
+The harness creates a disposable child account (~`fundingHbar` HBAR), injects its key as `burnerWallet.pk` for the validator, and best-effort sweeps the balance back at run end. See [docs/authoring-a-template.md](docs/authoring-a-template.md) for the full `chainValidation` shape (including optional `deploy` for Solidity templates).
 
 ## What you must provide
 

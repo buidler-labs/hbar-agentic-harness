@@ -4,6 +4,7 @@ import { CommandAgentProvider } from "./providers/commandAgentProvider.js";
 import { buildValidatorPrompt } from "./promptBuilder.js";
 import { writePromptFile } from "./runArtifacts.js";
 import type {
+  ChainSigner,
   SemanticValidationResult,
   TemplateSpec,
   ValidationFinding,
@@ -25,6 +26,7 @@ export async function runSemanticValidation(input: {
   logsDirectory: string;
   promptsDirectory: string;
   devServer?: DevServerSession;
+  chainSigner?: ChainSigner;
 }): Promise<SemanticValidationResult> {
   const startedAt = Date.now();
   const validatorConfig = input.spec.validator;
@@ -78,7 +80,9 @@ export async function runSemanticValidation(input: {
       await waitForServer(serverUrl, serverConfig.timeoutMs);
     }
 
-    const prompt = buildValidatorPrompt(contract, serverUrl);
+    const browserKey =
+      input.spec.chainValidation?.expose.browserLocalStorageKey ?? "burnerWallet.pk";
+    const prompt = buildValidatorPrompt(contract, serverUrl, input.chainSigner, browserKey);
     const promptPath = path.join(input.promptsDirectory, `validator-attempt-${input.attempt}.txt`);
     const agentLogPath = path.join(input.logsDirectory, `validator-attempt-${input.attempt}.log`);
     const agentActivityLogPath = path.join(

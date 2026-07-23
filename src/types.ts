@@ -124,6 +124,50 @@ export interface ValidatorAgentConfig extends CommandAgentConfig {
   enabled?: boolean;
 }
 
+export interface ChainValidationOperatorConfig {
+  accountIdEnv: string;
+  privateKeyEnv: string;
+}
+
+export interface ChainValidationExposeConfig {
+  /** localStorage key for burner-connector (default: burnerWallet.pk). */
+  browserLocalStorageKey?: string;
+  /** Env var names that receive the ephemeral private key for deploy commands. */
+  envVars?: string[];
+}
+
+export interface ChainValidationDeployCommand {
+  name: string;
+  command: string;
+  timeoutMs?: number;
+}
+
+export interface ChainValidationDeployConfig {
+  commands: ChainValidationDeployCommand[];
+}
+
+/**
+ * Optional Tier 3.5 on-chain validation: provision an ephemeral funded ECDSA
+ * testnet account, inject it as a burner wallet, and verify txs via mirror node.
+ */
+export interface ChainValidationConfig {
+  enabled: boolean;
+  network: "testnet";
+  operator: ChainValidationOperatorConfig;
+  fundingHbar: number;
+  sweepBack: boolean;
+  expose: ChainValidationExposeConfig;
+  deploy?: ChainValidationDeployConfig;
+}
+
+/** Ephemeral ECDSA test signer provisioned for a harness run. */
+export interface ChainSigner {
+  accountId: string;
+  privateKeyHex: string;
+  evmAddress: string;
+  network: "testnet";
+}
+
 export interface TemplateSpec {
   name: string;
   description?: string;
@@ -143,6 +187,7 @@ export interface TemplateSpec {
   requiredFiles: string[];
   forbiddenFiles: string[];
   secretScan?: SecretScanConfig;
+  chainValidation?: ChainValidationConfig;
   maxAttempts: number;
   logging: {
     jsonlPath: string;
@@ -308,6 +353,21 @@ export type HarnessLogEvent =
       prdPath: string;
       contractPath?: string;
       workspaceContextDir: string;
+    }
+  | {
+      type: "chain_signer_provisioned";
+      timestamp: string;
+      accountId: string;
+      evmAddress: string;
+      network: "testnet";
+      reused: boolean;
+    }
+  | {
+      type: "chain_signer_swept";
+      timestamp: string;
+      accountId: string;
+      success: boolean;
+      error?: string;
     }
   | {
       type: "workspace_git_initialized";

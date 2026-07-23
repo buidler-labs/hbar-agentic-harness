@@ -110,6 +110,20 @@ secretScan:
     - name: api-key-assignment
       pattern: "(API_KEY|TOKEN|SECRET)\\s*=\\s*['\\\"]?[A-Za-z0-9_\\-]{24,}"
 
+# Tier 3.5 — on-chain validation via ephemeral ECDSA test signer + mirror node.
+# Requires host env: HEDERA_OPERATOR_ID and HEDERA_OPERATOR_KEY (testnet ECDSA).
+chainValidation:
+  enabled: true
+  network: testnet
+  operator:
+    accountIdEnv: HEDERA_OPERATOR_ID
+    privateKeyEnv: HEDERA_OPERATOR_KEY
+  fundingHbar: 10
+  sweepBack: true
+  expose:
+    browserLocalStorageKey: burnerWallet.pk
+    envVars: []
+
 maxAttempts: 3
 
 logging:

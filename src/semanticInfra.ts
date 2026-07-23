@@ -23,6 +23,15 @@ const INFRA_TEXT_PATTERNS: RegExp[] = [
   /evaluator-no-browser/i,
   /shell commands to run browser automation were rejected/i,
   /webfetch cannot reach localhost/i,
+  // Chain / mirror-node infrastructure (not app defects)
+  /mirror[_ ]?node (?:unreachable|unavailable|timeout|timed out|failed)/i,
+  /testnet(?:\/relay)? (?:unreachable|unavailable|timeout|timed out)/i,
+  /hashio|json-?rpc relay (?:unreachable|unavailable|timeout)/i,
+  /insufficient[_ ]payer[_ ]balance/i,
+  /INSUFFICIENT_PAYER_BALANCE/,
+  /test signer account not found/i,
+  /chain signer (?:unavailable|failed|missing)/i,
+  /hedera testnet (?:unreachable|unavailable)/i,
 ];
 
 /**
