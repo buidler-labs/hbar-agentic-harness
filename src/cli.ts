@@ -25,6 +25,7 @@ export function printHelp(): void {
 
 Usage:
   hbar-harness run <spec> [--agent <name>] [--max-attempts <count>]
+  hbar-harness run <spec> --continue <run-dir> [--max-attempts <count>]
   hbar-harness validate <spec> --workspace <path>
   hbar-harness validate-semantic <spec> --workspace <path>
   hbar-harness supervise <spec> [--agent <name>] [--max-attempts <count>] [--max-cycles <count>]
@@ -32,6 +33,7 @@ Usage:
 Examples:
   hbar-harness run specs/hedera-demo-from-main.yaml
   hbar-harness run specs/hedera-demo-from-main.yaml --max-attempts 3
+  hbar-harness run specs/my-template.yaml --continue runs/<run-id> --max-attempts 3
   hbar-harness validate specs/hedera-demo-from-main.yaml --workspace runs/<run-id>/workspace
   hbar-harness validate-semantic specs/hedera-demo-from-main.yaml --workspace runs/<run-id>/workspace
   hbar-harness supervise specs/hedera-demo-from-main.yaml --max-cycles 20`);
@@ -96,6 +98,7 @@ export async function runCli(parsed: ParsedCli): Promise<void> {
     `passed=${report.passed}`,
     `oracleAudit=${report.blindIntegrity.passed ? "passed" : "failed"}`,
     `attempts=${report.attempts}/${report.maxAttempts}`,
+    report.cycle ? `cycle=${report.cycle} attemptsThisCycle=${report.attemptsThisCycle}` : undefined,
     `findings=${report.validation.findings.length}`,
     `workspace=${report.workspacePath}`,
     `report=${report.runDirectory}/reports/report.json`,
@@ -140,6 +143,9 @@ function parseOptions(specPath: string, args: string[]): CliOptions {
         break;
       case "--workspace":
         options.workspacePath = readValue(args, ++index, arg);
+        break;
+      case "--continue":
+        options.continueRunDirectory = readValue(args, ++index, arg);
         break;
       case "--help":
       case "-h":

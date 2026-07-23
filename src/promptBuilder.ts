@@ -88,6 +88,69 @@ export async function buildGeneratorPrompt(
 }
 
 /**
+ * First prompt of a --continue kick: improve the existing workspace against an updated PRD/contract.
+ */
+export async function buildContinuePrompt(
+  spec: TemplateSpec,
+  cycle: number,
+  vendoredSkills: VendoredSkill[] = [],
+): Promise<string> {
+  const metadata = spec.templateMetadata;
+  const skillSummaries = formatSkillSummaries(vendoredSkills);
+
+  return [
+    "You are continuing work on an existing scaffold-hbar template in the current workspace.",
+    "This is a fresh-context agent run. You do not retain memory from prior agent runs.",
+    "",
+    `Continue cycle: ${cycle}`,
+    "",
+    "## Read First (Updated Inputs)",
+    "The harness re-vendored the latest product brief and acceptance contract into the workspace:",
+    `- \`${VENDORED_PRD_PATH}\` — updated product requirements (may have changed since the last kick)`,
+    spec.contractPath
+      ? `- \`${VENDORED_CONTRACT_PATH}\` — numbered acceptance assertions the validator will grade against`
+      : undefined,
+    "- `GENERATION_NOTES.md` — prior generator/repair notes",
+    "",
+    "## Mission",
+    "Improve the **existing** app to match the updated PRD and pass validation.",
+    "Do NOT rebuild from scratch or wipe unrelated working features.",
+    "Prefer targeted edits: align UI/copy/flows to new or changed contract assertions, fix gaps, polish what already works.",
+    "",
+    "## Template Metadata Targets",
+    metadata?.name ? `- template name: ${metadata.name}` : undefined,
+    metadata?.frontend ? `- frontend capability: ${metadata.frontend}` : undefined,
+    metadata?.solidityFramework
+      ? `- solidity framework capability: ${metadata.solidityFramework}`
+      : undefined,
+    "",
+    ...formatHardConstraints(spec),
+    "",
+    "## Required Deliverables",
+    ...spec.requiredFiles.map(file => `- ${file}`),
+    "",
+    "## Skills To Leverage",
+    skillSummaries.length > 0
+      ? [
+          "Use only the vendored skills under `.harness-skills/`.",
+          skillSummaries,
+        ].join("\n\n")
+      : "- Use scaffold-hbar and Hedera best practices.",
+    "",
+    "## Completion Standard",
+    "Pass deterministic validation (files, yarn lint/build) and any enabled Playwright + semantic contract checks.",
+    spec.contractPath
+      ? "Read the acceptance contract and ensure the running app satisfies every assertion."
+      : undefined,
+    "",
+    "Append a brief note to `GENERATION_NOTES.md` describing what you changed for this continue cycle.",
+    "- Do not read or write files outside the current workspace.",
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+/**
  * Build a scoped repair prompt.
  * - semantic-scoped: only contract assertion gaps (Tier 0–2 already green)
  * - runtime: yarn/playwright failures

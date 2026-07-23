@@ -21,6 +21,8 @@ export interface CliOptions {
   maxAttempts?: number;
   maxCycles?: number;
   workspacePath?: string;
+  /** Reuse an existing run directory's workspace (accumulating project). */
+  continueRunDirectory?: string;
 }
 
 export interface ParsedCli {
@@ -244,6 +246,10 @@ export interface RunReport {
   seedCommitSha: string;
   attempts: number;
   maxAttempts: number;
+  /** Set when this kick was a --continue cycle (1-based). */
+  cycle?: number;
+  /** Attempts consumed in this kick only (fresh maxAttempts budget). */
+  attemptsThisCycle?: number;
   /** True when deterministic, playwright gate, and semantic validation (if configured) all pass. */
   passed: boolean;
   blindIntegrity: BlindIntegrityResult;
@@ -260,6 +266,29 @@ export type HarnessLogEvent =
       timestamp: string;
       specName: string;
       runDirectory: string;
+    }
+  | {
+      type: "run_continued";
+      timestamp: string;
+      specName: string;
+      runDirectory: string;
+      cycle: number;
+      startingAttempt: number;
+      maxAttemptsThisCycle: number;
+    }
+  | {
+      type: "cycle_started";
+      timestamp: string;
+      cycle: number;
+      startingAttempt: number;
+      maxAttemptsThisCycle: number;
+    }
+  | {
+      type: "continue_started";
+      timestamp: string;
+      attempt: number;
+      cycle: number;
+      promptPath: string;
     }
   | {
       type: "workspace_seeded";

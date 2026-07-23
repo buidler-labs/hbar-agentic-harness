@@ -1,11 +1,14 @@
 import path from "node:path";
-import { access, mkdir, readdir } from "node:fs/promises";
+import { access, mkdir, readFile } from "node:fs/promises";
 import { CommandAgentProvider } from "./providers/commandAgentProvider.js";
-import { buildGeneratorPrompt, buildRepairPrompt } from "./promptBuilder.js";
+import { buildContinuePrompt, buildGeneratorPrompt, buildRepairPrompt } from "./promptBuilder.js";
 import {
   appendHarnessLog,
   appendHarnessNote,
   createRunLayout,
+  lastAttemptNumber,
+  nextCycleNumber,
+  openRunLayout,
   writeJsonFile,
   writePromptFile,
   writeStatusFile,
@@ -24,7 +27,7 @@ import type {
 import { auditOracleAccess } from "./oracleAudit.js";
 import { vendorHarnessContext } from "./contextVendor.js";
 import { vendorSkills } from "./skillVendor.js";
-import { commitWorkspaceAttempt, initWorkspaceGit } from "./workspaceGit.js";
+import { commitWorkspaceAttempt, commitWorkspaceBaseline, ensureWorkspaceGit, initWorkspaceGit } from "./workspaceGit.js";
 import { runDeterministicValidation } from "./validation/index.js";
 import { isValidatorEnabled, runSemanticValidation } from "./semanticValidator.js";
 import { createDevServerSession, loadDevServerConfig } from "./validation/devServer.js";
@@ -36,50 +39,104 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
   const loaded = await loadTemplateSpec(options.specPath);
   const { spec, projectRoot } = loaded;
   const maxAttempts = options.maxAttempts ?? spec.maxAttempts;
-  const layout = await createRunLayout(projectRoot, spec.name, spec.logging);
+  const continueRunDirectory = resolveContinueRunDirectory(options);
+  const isContinue = Boolean(continueRunDirectory);
+  const layout = isContinue
+    ? await openRunLayout(continueRunDirectory!, spec.logging)
+    : await createRunLayout(projectRoot, spec.name, spec.logging);
   const startedAt = new Date();
   const generator = new CommandAgentProvider(spec.generator);
+  const cycle = isContinue ? await nextCycleNumber(layout.reportsDirectory) : undefined;
+  const startingAttempt = isContinue ? (await lastAttemptNumber(layout.logsDirectory)) + 1 : 1;
 
-  logPhase("Run started", layout.runDirectory);
+  logPhase(isContinue ? "Run continued" : "Run started", layout.runDirectory);
   await writeStatusFile(layout.runDirectory, {
-    phase: "started",
+    phase: isContinue ? "continued" : "started",
     specName: spec.name,
     runDirectory: layout.runDirectory,
+    cycle,
+    startingAttempt,
+    maxAttemptsThisCycle: maxAttempts,
   });
 
-  await appendHarnessLog(layout.jsonlLogPath, {
-    type: "run_started",
-    timestamp: startedAt.toISOString(),
-    specName: spec.name,
-    runDirectory: layout.runDirectory,
-  });
+  if (isContinue) {
+    await appendHarnessLog(layout.jsonlLogPath, {
+      type: "run_continued",
+      timestamp: startedAt.toISOString(),
+      specName: spec.name,
+      runDirectory: layout.runDirectory,
+      cycle: cycle!,
+      startingAttempt,
+      maxAttemptsThisCycle: maxAttempts,
+    });
+    await appendHarnessNote(
+      layout.notesLogPath,
+      `Run continued: ${spec.name} (cycle ${cycle})`,
+      [
+        `Run directory: ${layout.runDirectory}`,
+        `Spec: ${loaded.specPath}`,
+        `Starting attempt: ${startingAttempt}`,
+        `Budget this cycle: ${maxAttempts} attempt(s)`,
+      ].join("\n"),
+    );
+    await appendHarnessLog(layout.jsonlLogPath, {
+      type: "cycle_started",
+      timestamp: new Date().toISOString(),
+      cycle: cycle!,
+      startingAttempt,
+      maxAttemptsThisCycle: maxAttempts,
+    });
+  } else {
+    await appendHarnessLog(layout.jsonlLogPath, {
+      type: "run_started",
+      timestamp: startedAt.toISOString(),
+      specName: spec.name,
+      runDirectory: layout.runDirectory,
+    });
+    await appendHarnessNote(
+      layout.notesLogPath,
+      `Run started: ${spec.name}`,
+      `Run directory: ${layout.runDirectory}\nSpec: ${loaded.specPath}`,
+    );
+  }
 
-  await appendHarnessNote(
-    layout.notesLogPath,
-    `Run started: ${spec.name}`,
-    `Run directory: ${layout.runDirectory}\nSpec: ${loaded.specPath}`,
-  );
+  let seedResult: {
+    workspacePath: string;
+    repo: string;
+    ref: string;
+    commitSha: string;
+  };
 
-  logPhase("Seeding workspace from scaffold-hbar main", spec.seed.ref);
-  const seedResult = await seedWorkspace({
-    seed: spec.seed,
-    runDirectory: layout.runDirectory,
-    workspacePath: layout.workspacePath,
-    runPreflight: true,
-  });
-
-  await appendHarnessLog(layout.jsonlLogPath, {
-    type: "workspace_seeded",
-    timestamp: new Date().toISOString(),
-    seedCommitSha: seedResult.commitSha,
-    workspacePath: seedResult.workspacePath,
-  });
-  await writeStatusFile(layout.runDirectory, {
-    phase: "seeded",
-    seedCommitSha: seedResult.commitSha,
-    workspacePath: seedResult.workspacePath,
-  });
-  logPhase("Workspace seeded", seedResult.workspacePath);
+  if (isContinue) {
+    seedResult = await loadPriorSeedInfo(layout);
+    logPhase("Reusing existing workspace", seedResult.workspacePath);
+  } else {
+    logPhase("Seeding workspace from scaffold-hbar main", spec.seed.ref);
+    const seeded = await seedWorkspace({
+      seed: spec.seed,
+      runDirectory: layout.runDirectory,
+      workspacePath: layout.workspacePath,
+      runPreflight: true,
+    });
+    seedResult = {
+      workspacePath: seeded.workspacePath,
+      repo: seeded.repo,
+      ref: seeded.ref,
+      commitSha: seeded.commitSha,
+    };
+    await appendHarnessLog(layout.jsonlLogPath, {
+      type: "workspace_seeded",
+      timestamp: new Date().toISOString(),
+      seedCommitSha: seedResult.commitSha,
+      workspacePath: seedResult.workspacePath,
+    });
+    await writeStatusFile(layout.runDirectory, {
+      phase: "seeded",
+      seedCommitSha: seedResult.commitSha,
+      workspacePath: seedResult.workspacePath,
+    });
+    logPhase("Workspace seeded", seedResult.workspacePath);
+  }
 
   const vendoredSkills = await vendorSkills(seedResult.workspacePath, spec.skills ?? []);
   await appendHarnessLog(layout.jsonlLogPath, {
@@ -106,15 +163,44 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
     `.harness-context${vendoredContext.contractRelativePath ? " (prd + contract)" : " (prd)"}${vendoredContext.playwrightMcpPath ? " + playwright MCP" : ""}`,
   );
 
-  const gitInit = await initWorkspaceGit(seedResult.workspacePath);
-  await appendHarnessLog(layout.jsonlLogPath, {
-    type: "workspace_git_initialized",
-    timestamp: new Date().toISOString(),
-    commitSha: gitInit.commitSha,
-  });
-  logPhase("Workspace git initialized", gitInit.commitSha.slice(0, 8));
+  if (isContinue) {
+    const gitState = await ensureWorkspaceGit(seedResult.workspacePath);
+    if (gitState.initialized) {
+      await appendHarnessLog(layout.jsonlLogPath, {
+        type: "workspace_git_initialized",
+        timestamp: new Date().toISOString(),
+        commitSha: gitState.commitSha,
+      });
+      logPhase("Workspace git initialized", gitState.commitSha.slice(0, 8));
+    } else {
+      const baseline = await commitWorkspaceBaseline(
+        seedResult.workspacePath,
+        `harness: continue cycle ${cycle} baseline (re-vendored context)`,
+      );
+      await appendHarnessLog(layout.jsonlLogPath, {
+        type: "workspace_git_committed",
+        timestamp: new Date().toISOString(),
+        attempt: startingAttempt - 1,
+        committed: baseline.committed,
+        commitSha: baseline.commitSha,
+        message: baseline.message,
+      });
+      if (baseline.committed && baseline.commitSha) {
+        logPhase("Continue baseline committed", `${baseline.message} @ ${baseline.commitSha.slice(0, 8)}`);
+      }
+    }
+  } else {
+    const gitInit = await initWorkspaceGit(seedResult.workspacePath);
+    await appendHarnessLog(layout.jsonlLogPath, {
+      type: "workspace_git_initialized",
+      timestamp: new Date().toISOString(),
+      commitSha: gitInit.commitSha,
+    });
+    logPhase("Workspace git initialized", gitInit.commitSha.slice(0, 8));
+  }
 
-  let attempts = 0;
+  let attempts = isContinue ? await lastAttemptNumber(layout.logsDirectory) : 0;
+  let attemptsThisCycle = 0;
   let validation: ValidationResult = {
     passed: false,
     findings: [
@@ -126,34 +212,57 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
     ],
     commandResults: [],
   };
-  let latestPrompt = await buildGeneratorPrompt(spec, 1, vendoredSkills);
+  let latestPrompt = isContinue
+    ? await buildContinuePrompt(spec, cycle!, vendoredSkills)
+    : await buildGeneratorPrompt(spec, 1, vendoredSkills);
   let blindIntegrity: BlindIntegrityResult = {
     passed: true,
     findings: [],
     scannedLogs: [],
   };
 
-  while (attempts < maxAttempts) {
+  while (attemptsThisCycle < maxAttempts) {
     attempts += 1;
-    const promptPath = path.join(
-      layout.promptsDirectory,
-      attempts === 1 ? "generator-attempt-1.txt" : `repair-attempt-${attempts}.txt`,
-    );
+    attemptsThisCycle += 1;
+    const isFreshFirst = !isContinue && attempts === 1;
+    const isContinueFirst = isContinue && attemptsThisCycle === 1;
+    const promptFileName = isFreshFirst
+      ? `generator-attempt-${attempts}.txt`
+      : isContinueFirst
+        ? `continue-cycle-${cycle}-attempt-${attempts}.txt`
+        : `repair-attempt-${attempts}.txt`;
+    const promptPath = path.join(layout.promptsDirectory, promptFileName);
     await writePromptFile(promptPath, latestPrompt);
 
-    await appendHarnessLog(layout.jsonlLogPath, {
-      type: attempts === 1 ? "generator_started" : "repair_started",
-      timestamp: new Date().toISOString(),
-      attempt: attempts,
-      promptPath,
-    });
+    if (isContinueFirst) {
+      await appendHarnessLog(layout.jsonlLogPath, {
+        type: "continue_started",
+        timestamp: new Date().toISOString(),
+        attempt: attempts,
+        cycle: cycle!,
+        promptPath,
+      });
+    } else {
+      await appendHarnessLog(layout.jsonlLogPath, {
+        type: isFreshFirst ? "generator_started" : "repair_started",
+        timestamp: new Date().toISOString(),
+        attempt: attempts,
+        promptPath,
+      });
+    }
     await writeStatusFile(layout.runDirectory, {
-      phase: attempts === 1 ? "generator_running" : "repair_running",
+      phase: isFreshFirst || isContinueFirst ? "generator_running" : "repair_running",
       attempt: attempts,
+      cycle,
+      attemptsThisCycle,
       promptPath,
     });
     logPhase(
-      attempts === 1 ? `Generator attempt ${attempts} started` : `Repair attempt ${attempts} started`,
+      isFreshFirst
+        ? `Generator attempt ${attempts} started`
+        : isContinueFirst
+          ? `Continue cycle ${cycle} attempt ${attempts} started`
+          : `Repair attempt ${attempts} started`,
       "Tail logs/generator-attempt-N.activity.log and logs/workspace-activity.log",
     );
 
@@ -406,7 +515,7 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
       break;
     }
 
-    if (attempts < maxAttempts) {
+    if (attemptsThisCycle < maxAttempts) {
       latestPrompt = await buildRepairPrompt(spec, validation.findings, attempts + 1, vendoredContext);
     }
   }
@@ -422,6 +531,8 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
     seedCommitSha: seedResult.commitSha,
     attempts,
     maxAttempts,
+    cycle,
+    attemptsThisCycle,
     passed: validation.passed,
     blindIntegrity,
     startedAt: startedAt.toISOString(),
@@ -432,6 +543,9 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
   };
 
   await writeJsonFile(layout.reportPath, report);
+  if (isContinue && cycle !== undefined) {
+    await writeJsonFile(path.join(layout.reportsDirectory, `cycle-${cycle}.json`), report);
+  }
 
   await appendHarnessLog(layout.jsonlLogPath, {
     type: "run_finished",
@@ -443,13 +557,16 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
 
   await appendHarnessNote(
     layout.notesLogPath,
-    `Run finished: ${spec.name}`,
+    isContinue ? `Run continued finished: ${spec.name} (cycle ${cycle})` : `Run finished: ${spec.name}`,
     [
       report.passed
-        ? `Passed after ${report.attempts} attempt(s). Report: ${layout.reportPath}`
-        : `Failed after ${report.attempts} attempt(s). Report: ${layout.reportPath}`,
+        ? `Passed after ${report.attemptsThisCycle ?? report.attempts} attempt(s) this kick. Report: ${layout.reportPath}`
+        : `Failed after ${report.attemptsThisCycle ?? report.attempts} attempt(s) this kick. Report: ${layout.reportPath}`,
+      isContinue ? `Total attempts in project: ${report.attempts}` : undefined,
       formatBlindIntegritySummary(report.blindIntegrity),
-    ].join("\n"),
+    ]
+      .filter((line): line is string => Boolean(line))
+      .join("\n"),
   );
   await writeStatusFile(layout.runDirectory, {
     phase: "finished",
@@ -679,19 +796,43 @@ async function resolveSemanticArtifactDirs(workspacePath: string): Promise<{
 }
 
 async function nextSemanticAttempt(logsDirectory: string): Promise<number> {
-  let maxAttempt = 0;
-  try {
-    const entries = await readdir(logsDirectory);
-    for (const entry of entries) {
-      const match = /^semantic-validation-attempt-(\d+)\.json$/.exec(entry);
-      if (match) {
-        maxAttempt = Math.max(maxAttempt, Number.parseInt(match[1], 10));
-      }
-    }
-  } catch {
-    // empty / missing
+  return (await lastAttemptNumber(logsDirectory)) + 1;
+}
+
+function resolveContinueRunDirectory(options: CliOptions): string | undefined {
+  if (options.continueRunDirectory) {
+    return path.resolve(options.continueRunDirectory);
   }
-  return maxAttempt + 1;
+
+  if (options.workspacePath) {
+    const resolved = path.resolve(options.workspacePath);
+    if (path.basename(resolved) === "workspace") {
+      return path.dirname(resolved);
+    }
+  }
+
+  return undefined;
+}
+
+async function loadPriorSeedInfo(layout: {
+  runDirectory: string;
+  workspacePath: string;
+  reportPath: string;
+}): Promise<{ workspacePath: string; repo: string; ref: string; commitSha: string }> {
+  try {
+    const raw = await readFile(layout.reportPath, "utf8");
+    const report = JSON.parse(raw) as RunReport;
+    return {
+      workspacePath: layout.workspacePath,
+      repo: report.seedRepo,
+      ref: report.seedRef,
+      commitSha: report.seedCommitSha,
+    };
+  } catch {
+    throw new Error(
+      `Cannot continue run: missing or invalid report at ${layout.reportPath}. Start with a fresh \`run\` first.`,
+    );
+  }
 }
 
 function logPhase(title: string, detail?: string): void {

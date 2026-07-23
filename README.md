@@ -153,9 +153,23 @@ For a novel Hedera demo, copy the skeleton and follow the checklist:
 ## Run
 
 ```bash
-npm run harness -- run specs/my-template.yaml
+# First kick — creates runs/<timestamp>-<spec>/ with workspace/
 npm run harness -- run specs/my-template.yaml --max-attempts 3
+
+# Later kick — same project, updated PRD/contract on disk, fresh attempt budget
+npm run harness -- run specs/my-template.yaml --continue runs/<run-id> --max-attempts 3
 ```
+
+### Iterate on one project
+
+One run directory accumulates the whole project:
+
+1. **First kick** — seeds workspace, runs up to `maxAttempts`, writes logs under `runs/<id>/`.
+2. **Play with the app** — inspect `runs/<id>/workspace`, tweak locally if you want.
+3. **Edit PRD / contract / validators** on disk (harness re-vendors them on continue).
+4. **Continue kick** — `--continue runs/<id>` skips re-seed, refreshes context, starts a **continue prompt** (not a cold generate), and gives a **fresh `maxAttempts` budget**. Attempt numbers keep counting globally (4, 5, 6…). Cycle reports land in `reports/cycle-N.json`.
+
+Alias: `run … --workspace runs/<id>/workspace` resolves to the same run directory.
 
 Re-run deterministic (+ Playwright gate if configured) on an existing workspace:
 

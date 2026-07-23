@@ -123,6 +123,24 @@ Then:
 npm run harness -- run specs/${NAME}.yaml --max-attempts 3
 ```
 
+## Iterate on one project
+
+After the first kick, keep working in the **same** run directory:
+
+```bash
+# 1. Edit docs/prds/<name>.md and contracts/<name>-acceptance.json (and validators if needed)
+# 2. Continue with a fresh attempt budget — workspace is NOT re-seeded
+npm run harness -- run specs/${NAME}.yaml --continue runs/<run-id> --max-attempts 3
+```
+
+Each continue kick:
+
+- Re-vendors PRD, contract, skills, and Playwright MCP into the workspace
+- Starts with a **continue prompt** (improve existing app; do not rebuild from scratch)
+- Uses scoped **repair prompts** on failures within the cycle
+- Appends logs/prompts under the same `runs/<id>/`
+- Writes `reports/cycle-N.json` plus updates `reports/report.json`
+
 ## Design tips for novel demos
 
 1. **Write the contract from the PRD journeys**, not from an existing template’s file list.

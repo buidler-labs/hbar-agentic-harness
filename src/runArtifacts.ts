@@ -1,4 +1,4 @@
-import { appendFile, mkdir, writeFile } from "node:fs/promises";
+import { appendFile, access, mkdir, readdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { HarnessLogEvent } from "./types.js";
 
@@ -42,6 +42,76 @@ export async function createRunLayout(
     jsonlLogPath: logging.jsonlPath,
     notesLogPath: logging.notesPath,
   };
+}
+
+/** Reopen an existing accumulating run directory (for --continue). */
+export async function openRunLayout(
+  runDirectory: string,
+  logging: { jsonlPath: string; notesPath: string },
+): Promise<RunLayout> {
+  const absoluteRunDirectory = path.resolve(runDirectory);
+  const workspacePath = path.join(absoluteRunDirectory, "workspace");
+  const promptsDirectory = path.join(absoluteRunDirectory, "prompts");
+  const logsDirectory = path.join(absoluteRunDirectory, "logs");
+  const reportsDirectory = path.join(absoluteRunDirectory, "reports");
+
+  await access(workspacePath);
+
+  await mkdir(promptsDirectory, { recursive: true });
+  await mkdir(logsDirectory, { recursive: true });
+  await mkdir(reportsDirectory, { recursive: true });
+  await mkdir(path.join(absoluteRunDirectory, "cache"), { recursive: true });
+  await mkdir(path.dirname(logging.jsonlPath), { recursive: true });
+  await mkdir(path.dirname(logging.notesPath), { recursive: true });
+
+  return {
+    runDirectory: absoluteRunDirectory,
+    workspacePath,
+    promptsDirectory,
+    logsDirectory,
+    reportsDirectory,
+    reportPath: path.join(reportsDirectory, "report.json"),
+    jsonlLogPath: logging.jsonlPath,
+    notesLogPath: logging.notesPath,
+  };
+}
+
+/** Highest attempt number seen in logs/*-attempt-N.* filenames. */
+export async function lastAttemptNumber(logsDirectory: string): Promise<number> {
+  let maxAttempt = 0;
+  try {
+    const entries = await readdir(logsDirectory);
+    for (const entry of entries) {
+      const match = /-attempt-(\d+)(?:\.|$)/.exec(entry);
+      if (match) {
+        maxAttempt = Math.max(maxAttempt, Number.parseInt(match[1], 10));
+      }
+    }
+  } catch {
+    // empty / missing
+  }
+  return maxAttempt;
+}
+
+export async function nextAttemptNumber(logsDirectory: string): Promise<number> {
+  return (await lastAttemptNumber(logsDirectory)) + 1;
+}
+
+/** 1-based cycle index for the next --continue kick. */
+export async function nextCycleNumber(reportsDirectory: string): Promise<number> {
+  let maxCycle = 0;
+  try {
+    const entries = await readdir(reportsDirectory);
+    for (const entry of entries) {
+      const match = /^cycle-(\d+)\.json$/.exec(entry);
+      if (match) {
+        maxCycle = Math.max(maxCycle, Number.parseInt(match[1], 10));
+      }
+    }
+  } catch {
+    // empty / missing
+  }
+  return maxCycle + 1;
 }
 
 export async function appendHarnessLog(jsonlLogPath: string, event: HarnessLogEvent): Promise<void> {

@@ -6,6 +6,15 @@ import type { AgentProvider, AgentRunInput, AgentRunResult, CommandAgentConfig }
 const PROMPT_PLACEHOLDER = "{prompt}";
 const WORKSPACE_PLACEHOLDER = "{workspace}";
 const DEFAULT_TIMEOUT_MS = 30 * 60 * 1000;
+/** Kill agent if stream output goes silent (stuck after THINKING completed). */
+const DEFAULT_IDLE_TIMEOUT_MS = 10 * 60 * 1000;
+
+function readIdleTimeoutMs(): number {
+  const raw = process.env.HARNESS_AGENT_IDLE_TIMEOUT_MS;
+  if (!raw) return DEFAULT_IDLE_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_IDLE_TIMEOUT_MS;
+}
 
 export class CommandAgentProvider implements AgentProvider {
   private readonly config: CommandAgentConfig;
@@ -36,6 +45,7 @@ export class CommandAgentProvider implements AgentProvider {
       workspacePath: input.workspacePath,
     }, input.role);
     const timeoutMs = input.timeoutMs ?? this.config.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+    const idleTimeoutMs = readIdleTimeoutMs();
     const streamLogger = input.activityLogPath
       ? new AgentStreamLogger(input.activityLogPath, input.onProgress)
       : null;
@@ -54,21 +64,55 @@ export class CommandAgentProvider implements AgentProvider {
       const stdoutChunks: Buffer[] = [];
       const stderrChunks: Buffer[] = [];
       let timedOut = false;
+      let idleTimedOut = false;
       let settled = false;
+      let idleTimer: NodeJS.Timeout | undefined;
+      let hardKillTimer: NodeJS.Timeout | undefined;
 
-      void initializeAgentLog(input.logPath, this.config.command, args, timeoutMs);
+      void initializeAgentLog(input.logPath, this.config.command, args, timeoutMs, idleTimeoutMs);
       void streamLogger?.initialize();
 
-      const timeout = setTimeout(() => {
+      const settleAgent = (reason: "wall-clock" | "idle") => {
+        if (settled) return;
         timedOut = true;
-        void appendAgentLog(input.logPath, `\n## harness\nagent timed out after ${timeoutMs}ms\n`);
+        idleTimedOut = reason === "idle";
+        const limitMs = reason === "idle" ? idleTimeoutMs : timeoutMs;
+        console.log(
+          `[hbar-harness] Agent ${reason === "idle" ? "idle-" : ""}timeout after ${Math.round(limitMs / 1000)}s — stopping agent`,
+        );
+        void appendAgentLog(
+          input.logPath,
+          `\n## harness\nagent ${reason === "idle" ? "idle-" : ""}timed out after ${reason === "idle" ? idleTimeoutMs : timeoutMs}ms\n`,
+        );
         void streamLogger?.processChunk(
-          `${JSON.stringify({ type: "result", subtype: "timeout", is_error: true, duration_ms: Date.now() - startedAt })}\n`,
+          `${JSON.stringify({
+            type: "result",
+            subtype: reason === "idle" ? "idle_timeout" : "timeout",
+            is_error: true,
+            duration_ms: Date.now() - startedAt,
+          })}\n`,
         );
         child.kill("SIGTERM");
-      }, timeoutMs);
+        hardKillTimer = setTimeout(() => {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // Already exited.
+          }
+        }, 5_000);
+      };
+
+      const resetIdleTimer = () => {
+        clearTimeout(idleTimer);
+        idleTimer = setTimeout(() => settleAgent("idle"), idleTimeoutMs);
+      };
+
+      const timeout = setTimeout(() => settleAgent("wall-clock"), timeoutMs);
+
+      resetIdleTimer();
 
       child.stdout.on("data", chunk => {
+        resetIdleTimer();
         const buffer = Buffer.from(chunk);
         stdoutChunks.push(buffer);
         const text = buffer.toString("utf8");
@@ -77,6 +121,7 @@ export class CommandAgentProvider implements AgentProvider {
       });
 
       child.stderr.on("data", chunk => {
+        resetIdleTimer();
         const buffer = Buffer.from(chunk);
         stderrChunks.push(buffer);
         const text = buffer.toString("utf8");
@@ -88,6 +133,8 @@ export class CommandAgentProvider implements AgentProvider {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
+        clearTimeout(idleTimer);
+        clearTimeout(hardKillTimer);
         reject(error);
       });
 
@@ -95,11 +142,18 @@ export class CommandAgentProvider implements AgentProvider {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
+        clearTimeout(idleTimer);
+        clearTimeout(hardKillTimer);
 
         const result: AgentRunResult = {
           exitCode,
           stdout: Buffer.concat(stdoutChunks).toString("utf8"),
-          stderr: Buffer.concat(stderrChunks).toString("utf8"),
+          stderr: [
+            Buffer.concat(stderrChunks).toString("utf8"),
+            idleTimedOut
+              ? `\n[hbar-harness] Agent produced no output for ${idleTimeoutMs}ms; treating as failure.\n`
+              : "",
+          ].join(""),
           durationMs: Date.now() - startedAt,
           command: this.config.command,
           args,
@@ -120,6 +174,7 @@ async function initializeAgentLog(
   command: string,
   args: string[],
   timeoutMs: number,
+  idleTimeoutMs: number,
 ): Promise<void> {
   if (!logPath) return;
 
@@ -130,6 +185,7 @@ async function initializeAgentLog(
       `command=${command}`,
       `args=${JSON.stringify(args.slice(0, -1))}`,
       `timeoutMs=${timeoutMs}`,
+      `idleTimeoutMs=${idleTimeoutMs}`,
       "",
       "## stdout",
       "",
