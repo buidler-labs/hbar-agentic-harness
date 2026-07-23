@@ -407,7 +407,7 @@ export async function runHarness(options: CliOptions): Promise<RunReport> {
     }
 
     if (attempts < maxAttempts) {
-      latestPrompt = buildRepairPrompt(spec, validation.findings, attempts + 1, vendoredContext);
+      latestPrompt = await buildRepairPrompt(spec, validation.findings, attempts + 1, vendoredContext);
     }
   }
 

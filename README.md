@@ -218,7 +218,7 @@ CLI commands: `run`, `validate`, `validate-semantic` (`supervise` is not impleme
 - **Blind by default** — no reference finished template is passed in; compare outputs manually if you want.
 - **Oracle audit** — scans agent logs for access outside the run workspace; logged only.
 - **Yarn-only constraints** — typical for scaffold-hbar; encode package-manager rules in the spec.
-- **Repair stays in-workspace** — findings (including semantic assertion IDs when Tier 3 is on) feed the next generator prompt.
+- **Repair stays in-workspace** — findings (including semantic assertion IDs when Tier 3 is on) feed a **scoped** repair prompt: semantic-only gaps get assertion `statement` / `howToVerify`; lint/Playwright failures stay runtime-focused.
 
 ## License
 

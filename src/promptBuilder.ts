@@ -7,6 +7,20 @@ import {
 } from "./contextVendor.js";
 import type { VendoredSkill } from "./skillVendor.js";
 
+export type RepairScope = "semantic-scoped" | "runtime" | "broad";
+
+interface ContractAssertion {
+  id: string;
+  journey?: string;
+  route?: string;
+  severity?: string;
+  statement?: string;
+  howToVerify?: string;
+  walletRequired?: boolean;
+}
+
+const ASSERTION_ID_PATTERN = /\b(C\d+)\b/i;
+
 export async function buildGeneratorPrompt(
   spec: TemplateSpec,
   attempt: number,
@@ -73,23 +87,210 @@ export async function buildGeneratorPrompt(
     .join("\n");
 }
 
-export function buildRepairPrompt(
+/**
+ * Build a scoped repair prompt.
+ * - semantic-scoped: only contract assertion gaps (Tier 0–2 already green)
+ * - runtime: yarn/playwright failures
+ * - broad: structural/static/mixed failures
+ */
+export async function buildRepairPrompt(
   spec: TemplateSpec,
   findings: ValidationFinding[],
   attempt: number,
   vendoredContext?: VendoredContext,
-): string {
-  const grouped = findings
-    .map(finding => `- [${finding.category}] ${finding.message}${finding.details ? `\n  ${finding.details}` : ""}`)
-    .join("\n");
-  const metadata = spec.templateMetadata;
+): Promise<string> {
+  const actionable = findings.filter(finding => finding.category !== "semantic-infra");
+  const scope = classifyRepairScope(actionable);
   const contractPath = vendoredContext?.contractRelativePath ?? VENDORED_CONTRACT_PATH;
+  const assertions = await loadContractAssertions(
+    vendoredContext?.contractSourcePath ?? spec.contractPath,
+  );
+
+  if (scope === "semantic-scoped") {
+    return buildSemanticScopedRepairPrompt({
+      spec,
+      findings: actionable,
+      attempt,
+      contractPath,
+      assertions,
+    });
+  }
+
+  if (scope === "runtime") {
+    return buildRuntimeRepairPrompt({
+      spec,
+      findings: actionable,
+      attempt,
+      contractPath,
+      assertions,
+    });
+  }
+
+  return buildBroadRepairPrompt({
+    spec,
+    findings: actionable,
+    attempt,
+    contractPath,
+    assertions,
+  });
+}
+
+export function classifyRepairScope(findings: ValidationFinding[]): RepairScope {
+  const actionable = findings.filter(finding => finding.category !== "semantic-infra");
+  if (actionable.length === 0) {
+    return "broad";
+  }
+
+  const categories = new Set(actionable.map(finding => finding.category));
+  const onlySemantic = [...categories].every(category => category === "semantic");
+  if (onlySemantic) {
+    return "semantic-scoped";
+  }
+
+  const hasStructural = [...categories].some(category =>
+    ["files", "static", "secret", "agent"].includes(category),
+  );
+  if (!hasStructural && [...categories].every(category => ["commands", "playwright", "semantic"].includes(category))) {
+    const hasRuntime = categories.has("commands") || categories.has("playwright");
+    if (hasRuntime) {
+      return "runtime";
+    }
+  }
+
+  return "broad";
+}
+
+export function extractAssertionId(finding: ValidationFinding): string | undefined {
+  if (finding.contractAssertion) {
+    return finding.contractAssertion.toUpperCase();
+  }
+  const fromMessage = finding.message.match(ASSERTION_ID_PATTERN);
+  if (fromMessage) {
+    return fromMessage[1].toUpperCase();
+  }
+  const fromId = finding.id.match(ASSERTION_ID_PATTERN);
+  return fromId ? fromId[1].toUpperCase() : undefined;
+}
+
+function buildSemanticScopedRepairPrompt(input: {
+  spec: TemplateSpec;
+  findings: ValidationFinding[];
+  attempt: number;
+  contractPath: string;
+  assertions: Map<string, ContractAssertion>;
+}): string {
+  const { spec, findings, attempt, contractPath, assertions } = input;
+  const targets = formatSemanticTargets(findings, assertions);
 
   return [
     "You are repairing a scaffold-hbar template in the current workspace.",
     "This is a fresh-context repair attempt. You do not retain memory from prior agent runs.",
     "",
     `Repair attempt: ${attempt}`,
+    "Repair scope: **semantic-scoped** (deterministic checks and Playwright gate already passed).",
+    "",
+    "## Read First (Workspace Memory)",
+    "Before changing anything, read:",
+    `- \`${contractPath}\` — focus on the failed assertion ids listed below`,
+    "- `GENERATION_NOTES.md` — prior notes (create if missing)",
+    `- Skim \`${VENDORED_PRD_PATH}\` only if you need product wording; do not redesign from the full PRD`,
+    "",
+    "## Repair Mission",
+    "Fix ONLY the failed acceptance-contract assertions below.",
+    "Do not redesign unrelated routes, rewrite architecture, or re-litigate Tier 0–2 work.",
+    "Prefer small, local UI/copy/state fixes on the cited routes.",
+    "",
+    "## Failed Assertions (fix these)",
+    targets,
+    "",
+    ...formatHardConstraints(spec),
+    "",
+    "## Repair Rules",
+    "- Keep Yarn-only workflows; do not add secrets or `.env` files.",
+    "- Preserve scaffold-hbar template conventions.",
+    "- Do NOT attempt to fix harness/tooling (MCP/browser) issues.",
+    "- After edits, mentally re-check each listed assertion using its howToVerify steps.",
+    "",
+    "Append a brief repair note to `GENERATION_NOTES.md` listing which assertion ids you fixed.",
+    "- Do not read or write files outside the current workspace.",
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+function buildRuntimeRepairPrompt(input: {
+  spec: TemplateSpec;
+  findings: ValidationFinding[];
+  attempt: number;
+  contractPath: string;
+  assertions: Map<string, ContractAssertion>;
+}): string {
+  const { spec, findings, attempt, contractPath, assertions } = input;
+  const metadata = spec.templateMetadata;
+  const hasSemantic = findings.some(finding => finding.category === "semantic");
+
+  return [
+    "You are repairing a scaffold-hbar template in the current workspace.",
+    "This is a fresh-context repair attempt. You do not retain memory from prior agent runs.",
+    "",
+    `Repair attempt: ${attempt}`,
+    "Repair scope: **runtime** (lint/build and/or Playwright gate failures).",
+    "",
+    "## Read First (Workspace Memory)",
+    "Before changing anything, read:",
+    "- `GENERATION_NOTES.md` — prior notes (create if missing)",
+    `- \`${VENDORED_PRD_PATH}\` — only as needed for intended behavior`,
+    hasSemantic && spec.contractPath
+      ? `- \`${contractPath}\` — only the failed assertion ids if listed below`
+      : undefined,
+    "",
+    "## Repair Mission",
+    "Restore a green build and thin Playwright gate first. Fix compile, lint, and route runtime errors before any polish.",
+    "Do not redesign unrelated features.",
+    "",
+    "## Template Metadata Targets",
+    metadata?.name ? `- template name: ${metadata.name}` : undefined,
+    metadata?.frontend ? `- frontend capability: ${metadata.frontend}` : undefined,
+    metadata?.solidityFramework
+      ? `- solidity framework capability: ${metadata.solidityFramework}`
+      : undefined,
+    "",
+    ...formatHardConstraints(spec),
+    "",
+    "## Validation Findings",
+    formatFindingsList(findings),
+    hasSemantic ? ["", "## Failed Assertions (also fix if listed)", formatSemanticTargets(findings, assertions)].join("\n") : undefined,
+    "",
+    "## Repair Rules",
+    "- Keep Yarn-only workflows; do not add secrets or `.env` files.",
+    "- Preserve scaffold-hbar template conventions.",
+    "- Priority: [commands] → [playwright] → [semantic].",
+    "- Do NOT attempt to fix [semantic-infra] / MCP tooling failures.",
+    "",
+    "Append a brief repair note to `GENERATION_NOTES.md`.",
+    "- Do not read or write files outside the current workspace.",
+  ]
+    .filter((line): line is string => Boolean(line))
+    .join("\n");
+}
+
+function buildBroadRepairPrompt(input: {
+  spec: TemplateSpec;
+  findings: ValidationFinding[];
+  attempt: number;
+  contractPath: string;
+  assertions: Map<string, ContractAssertion>;
+}): string {
+  const { spec, findings, attempt, contractPath, assertions } = input;
+  const metadata = spec.templateMetadata;
+  const hasSemantic = findings.some(finding => finding.category === "semantic");
+
+  return [
+    "You are repairing a scaffold-hbar template in the current workspace.",
+    "This is a fresh-context repair attempt. You do not retain memory from prior agent runs.",
+    "",
+    `Repair attempt: ${attempt}`,
+    "Repair scope: **broad** (structural and/or mixed validation failures).",
     "",
     "## Read First (Workspace Memory)",
     "Before changing anything, read these files in the current workspace:",
@@ -113,7 +314,10 @@ export function buildRepairPrompt(
     ...spec.requiredFiles.map(file => `- ${file}`),
     "",
     "## Validation Findings",
-    grouped,
+    formatFindingsList(findings),
+    hasSemantic
+      ? ["", "## Failed Assertions (detail)", formatSemanticTargets(findings, assertions)].join("\n")
+      : undefined,
     "",
     "## Repair Rules",
     "- Keep Yarn-only workflows.",
@@ -128,6 +332,65 @@ export function buildRepairPrompt(
   ]
     .filter((line): line is string => Boolean(line))
     .join("\n");
+}
+
+function formatFindingsList(findings: ValidationFinding[]): string {
+  if (findings.length === 0) {
+    return "- (no findings)";
+  }
+  return findings
+    .map(finding => `- [${finding.category}] ${finding.message}${finding.details ? `\n  ${finding.details}` : ""}`)
+    .join("\n");
+}
+
+function formatSemanticTargets(
+  findings: ValidationFinding[],
+  assertions: Map<string, ContractAssertion>,
+): string {
+  const semantic = findings.filter(finding => finding.category === "semantic");
+  if (semantic.length === 0) {
+    return "- (no semantic findings)";
+  }
+
+  return semantic
+    .map(finding => {
+      const assertionId = extractAssertionId(finding);
+      const fromContract = assertionId ? assertions.get(assertionId) : undefined;
+      const route = finding.route ?? fromContract?.route;
+      const lines = [
+        `### ${assertionId ?? finding.id}`,
+        route ? `- route: \`${route}\`` : undefined,
+        fromContract?.severity ? `- severity: ${fromContract.severity}` : undefined,
+        fromContract?.journey ? `- journey: ${fromContract.journey}` : undefined,
+        fromContract?.statement ? `- statement: ${fromContract.statement}` : undefined,
+        fromContract?.howToVerify ? `- howToVerify: ${fromContract.howToVerify}` : undefined,
+        `- validator message: ${finding.message}`,
+        finding.details ? `- evidence: ${finding.details}` : undefined,
+      ];
+      return lines.filter((line): line is string => Boolean(line)).join("\n");
+    })
+    .join("\n\n");
+}
+
+async function loadContractAssertions(contractPath?: string): Promise<Map<string, ContractAssertion>> {
+  const map = new Map<string, ContractAssertion>();
+  if (!contractPath) {
+    return map;
+  }
+
+  try {
+    const raw = await readFile(contractPath, "utf8");
+    const parsed = JSON.parse(raw) as { assertions?: ContractAssertion[] };
+    for (const assertion of parsed.assertions ?? []) {
+      if (assertion?.id) {
+        map.set(assertion.id.toUpperCase(), assertion);
+      }
+    }
+  } catch {
+    // Contract missing/unreadable — repair still works with finding text only.
+  }
+
+  return map;
 }
 
 function formatHardConstraints(spec: TemplateSpec): string[] {

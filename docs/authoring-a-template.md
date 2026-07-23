@@ -1,6 +1,6 @@
 # Authoring a new template benchmark
 
-Use this checklist when adding a **novel** Hedera demo to the harness (any product — not a copy of an existing example).
+Use this checklist when adding a **novel** Hedera demo to the harness.
 
 Copy the skeletons, fill in placeholders, then smoke-test before a full `run`.
 
@@ -130,6 +130,7 @@ npm run harness -- run specs/${NAME}.yaml --max-attempts 3
 3. **Align `template.json` capabilities** with `forbiddenFiles` / Solidity constraints so static checks match the PRD.
 4. **One primary package manager story** (Yarn workspaces for scaffold-hbar).
 5. **Fail closed on uncertainty** in contract `evaluationRules` — absence of evidence is a fail.
+6. **Repair is scoped** — if only semantic assertions fail, the next attempt gets those `C#` ids + `statement` / `howToVerify` instead of a full re-brief. Prefer clear assertion ids (`C1`, `C2`, …) in the contract.
 
 ## Skeleton map
 

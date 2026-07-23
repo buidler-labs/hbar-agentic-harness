@@ -207,6 +207,10 @@ export interface ValidationFinding {
     | "semantic-infra";
   message: string;
   details?: string;
+  /** Acceptance-contract assertion id when category is semantic (e.g. C7). */
+  contractAssertion?: string;
+  /** Route associated with a semantic finding, when known. */
+  route?: string;
 }
 
 export interface OracleAccessFinding {

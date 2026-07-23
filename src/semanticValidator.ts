@@ -189,6 +189,8 @@ function mapIssueToFinding(issue: ValidatorIssue): ValidationFinding {
     category: "semantic",
     message: `${issue.severity}${assertion}${route}: ${issue.message}`,
     details: issue.evidence,
+    contractAssertion: issue.contractAssertion,
+    route: issue.route,
   };
 }
 
